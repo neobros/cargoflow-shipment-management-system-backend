@@ -26,6 +26,13 @@ export type Permission =
   | 'adjustments:approve'
   | 'adjustments:waive'
   | 'invoices:issue'
+  | 'depot:receive'
+  | 'depot:verify'
+  | 'depot:label'
+  | 'containers:read'
+  | 'containers:load'
+  | 'containers:seal'
+  | 'containers:manage'
   | 'rates:read'
   | 'rates:publish'
   | 'staff:manage';
@@ -36,8 +43,30 @@ export type Permission =
  * can read beats an inheritance chain you have to reason about.
  */
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
-  operator: ['bookings:read', 'adjustments:read', 'adjustments:remind'],
-  supervisor: ['admin:access', 'bookings:read', 'adjustments:read', 'adjustments:remind'],
+  operator: [
+    'bookings:read',
+    'adjustments:read',
+    'adjustments:remind',
+    'depot:receive',
+    'depot:verify',
+    'depot:label',
+    'containers:read',
+    'containers:load',
+  ],
+  supervisor: [
+    'admin:access',
+    'bookings:read',
+    'adjustments:read',
+    'adjustments:remind',
+    'depot:receive',
+    'depot:verify',
+    'depot:label',
+    'containers:read',
+    'containers:load',
+    // Sealing is irreversible and needs a second pair of eyes.
+    'containers:seal',
+    'containers:manage',
+  ],
   billing: [
     'admin:access',
     'bookings:read',
@@ -46,6 +75,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'adjustments:approve',
     'adjustments:waive',
     'invoices:issue',
+    'containers:read',
     'rates:read',
   ],
   admin: [
@@ -56,6 +86,13 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'adjustments:approve',
     'adjustments:waive',
     'invoices:issue',
+    'depot:receive',
+    'depot:verify',
+    'depot:label',
+    'containers:read',
+    'containers:load',
+    'containers:seal',
+    'containers:manage',
     'rates:read',
     'rates:publish',
     'staff:manage',
@@ -74,6 +111,13 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   'adjustments:approve': 'approve a price change',
   'adjustments:waive': 'waive a price change',
   'invoices:issue': 'issue invoices',
+  'depot:receive': 'receive boxes at the depot',
+  'depot:verify': 'weigh and measure boxes',
+  'depot:label': 'print shipping labels',
+  'containers:read': 'view containers',
+  'containers:load': 'load boxes into a container',
+  'containers:seal': 'seal a container',
+  'containers:manage': 'open and schedule containers',
   'rates:read': 'view rate cards',
   'rates:publish': 'publish rate cards',
   'staff:manage': 'manage staff',

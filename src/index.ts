@@ -13,7 +13,8 @@ const start = async (): Promise<void> => {
   await seedStaff();
 
   // Development convenience: one real shipment so /track works from minute one.
-  if (connection.inMemory) await seedDemoShipment();
+  // Guarded inside on the booking count, so it never touches a used database.
+  if (env.NODE_ENV !== 'production') await seedDemoShipment();
 
   const app = await buildServer();
 
@@ -24,6 +25,21 @@ const start = async (): Promise<void> => {
     );
   } else {
     app.log.info({ database: connection.database }, 'Connected to MongoDB');
+  }
+
+  /**
+   * Multi-document transactions need a replica set. A standalone mongod — what
+   * the Windows and Homebrew installers give you — cannot run them, so those
+   * writes fall back to running without a session. Correct under one operator,
+   * not safe under load, and never what you want in production. Say so.
+   */
+  if (!connection.transactions) {
+    app.log.warn(
+      'This MongoDB is a standalone, so multi-document transactions are unavailable ' +
+        'and writes that should be atomic are not. Fine for development. For production, ' +
+        'or to test the real write path, use a replica set: ' +
+        'mongod --replSet rs0 then rs.initiate(), or leave MONGODB_URI empty to get one automatically.',
+    );
   }
 
   await app.listen({ port: env.PORT, host: env.HOST });

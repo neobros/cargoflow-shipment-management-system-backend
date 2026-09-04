@@ -1,5 +1,5 @@
 import { ObjectId } from 'mongodb';
-import { COLLECTIONS, collection, getDb } from '../../db/mongo.js';
+import { COLLECTIONS, collection, withTransaction } from '../../db/mongo.js';
 import { AppError } from '../../shared/errors.js';
 import { formatMinor, formatMoney, money } from '../../shared/units.js';
 import type { StaffDoc } from '../auth/types.js';
@@ -177,41 +177,35 @@ export const settleAdjustment = async (
   }
 
   const now = new Date();
-  const session = getDb().client.startSession();
-
-  try {
-    // Piece status, adjustment state and the audit event move together or not
-    // at all. A piece released for loading with no record of who released it
-    // is the failure this transaction exists to prevent.
-    await session.withTransaction(async () => {
-      await adjustments().updateOne(
-        { _id: adjustment._id },
-        {
-          $set: {
-            state: outcome,
-            settledAt: now,
-            settledBy: actor.email,
-            settledReason: reason,
-          },
+  // Piece status, adjustment state and the audit event move together or not
+  // at all. A piece released for loading with no record of who released it is
+  // the failure this transaction exists to prevent.
+  await withTransaction(async (session) => {
+    await adjustments().updateOne(
+      { _id: adjustment._id },
+      {
+        $set: {
+          state: outcome,
+          settledAt: now,
+          settledBy: actor.email,
+          settledReason: reason,
         },
-        { session },
-      );
+      },
+      { session },
+    );
 
-      await pieces().updateMany(
-        { bookingId: adjustment.bookingId, status: 'rerate_held' },
-        { $set: { status: 'verified' } },
-        { session },
-      );
+    await pieces().updateMany(
+      { bookingId: adjustment.bookingId, status: 'rerate_held' },
+      { $set: { status: 'verified' } },
+      { session },
+    );
 
-      await bookings().updateOne(
-        { _id: adjustment.bookingId },
-        { $set: { status: 'verified', updatedAt: now } },
-        { session },
-      );
-    });
-  } finally {
-    await session.endSession();
-  }
+    await bookings().updateOne(
+      { _id: adjustment.bookingId },
+      { $set: { status: 'verified', updatedAt: now } },
+      { session },
+    );
+  });
 
   const affected = await pieces().find({ bookingId: adjustment.bookingId }).toArray();
   await events().insertMany(

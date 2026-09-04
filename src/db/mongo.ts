@@ -1,4 +1,4 @@
-import { MongoClient, type Collection, type Db, type Document } from 'mongodb';
+import { MongoClient, type ClientSession, type Collection, type Db, type Document } from 'mongodb';
 import { env } from '../config/env.js';
 
 /**
@@ -42,7 +42,50 @@ export interface ConnectionInfo {
   uri: string;
   database: string;
   inMemory: boolean;
+  /** False against a standalone mongod — see withTransaction below. */
+  transactions: boolean;
 }
+
+let transactionsAvailable = false;
+
+export const hasTransactions = (): boolean => transactionsAvailable;
+
+/**
+ * Run a unit of work atomically where the deployment allows it.
+ *
+ * Multi-document transactions need a replica set or a sharded cluster. Every
+ * production target has one — Atlas is a replica set, so is any sane
+ * self-hosted deployment — but a developer who installed MongoDB from the
+ * Windows installer gets a standalone, and on a standalone every transaction
+ * throws "Transaction numbers are only allowed on a replica set member".
+ *
+ * Refusing to start would be defensible; silently dropping atomicity would not
+ * be. So the capability is detected once at connect time, the fallback path
+ * runs the same writes without a session, and the server says loudly at boot
+ * which mode it is in. The callback takes an optional session precisely so both
+ * paths are the same code.
+ */
+export const withTransaction = async <T>(
+  work: (session: ClientSession | undefined) => Promise<T>,
+): Promise<T> => {
+  if (!transactionsAvailable) return work(undefined);
+
+  const session = getClient().startSession();
+  try {
+    let result: T;
+    await session.withTransaction(async () => {
+      result = await work(session);
+    });
+    return result!;
+  } finally {
+    await session.endSession();
+  }
+};
+
+export const getClient = (): MongoClient => {
+  if (!client) throw new Error('Database not connected — call connectToDatabase() first');
+  return client;
+};
 
 /**
  * Connect, and in development conjure a database if none was configured.
@@ -69,7 +112,12 @@ export const connectToDatabase = async (): Promise<ConnectionInfo> => {
   await client.connect();
   db = client.db(env.MONGODB_DB);
 
-  return { uri, database: env.MONGODB_DB, inMemory };
+  // `hello` reports the topology: a replica set names itself, a mongos
+  // identifies as isdbgrid. Anything else is a standalone.
+  const hello = await db.admin().command({ hello: 1 });
+  transactionsAvailable = Boolean(hello.setName) || hello.msg === 'isdbgrid';
+
+  return { uri, database: env.MONGODB_DB, inMemory, transactions: transactionsAvailable };
 };
 
 export const closeDatabase = async (): Promise<void> => {
@@ -85,12 +133,25 @@ export const closeDatabase = async (): Promise<void> => {
  * equality–sort–range rule; the partial index on adjustments keeps the
  * exceptions queue reading a handful of documents out of hundreds of thousands.
  */
+/** Drop an index that a later version replaced. Absent is success. */
+const dropIfPresent = async (collectionName: string, indexName: string): Promise<void> => {
+  try {
+    await getDb().collection(collectionName).dropIndex(indexName);
+  } catch {
+    // IndexNotFound, or the collection does not exist yet. Both are fine.
+  }
+};
+
 export const ensureIndexes = async (): Promise<void> => {
   const database = getDb();
+
+  // Superseded by piece_tracking_issued_unique below.
+  await dropIfPresent(COLLECTIONS.pieces, 'piece_tracking_unique');
 
   await database.collection(COLLECTIONS.customers).createIndexes([
     { key: { mobile: 1 }, unique: true, name: 'customer_mobile_unique' },
     { key: { reference: 1 }, unique: true, name: 'customer_reference_unique' },
+    { key: { mobile: 1 }, unique: true, name: 'customer_mobile_unique' },
   ]);
 
   await database.collection(COLLECTIONS.bookings).createIndexes([
@@ -100,7 +161,18 @@ export const ensureIndexes = async (): Promise<void> => {
   ]);
 
   await database.collection(COLLECTIONS.pieces).createIndexes([
-    { key: { trackingId: 1 }, unique: true, name: 'piece_tracking_unique' },
+    /**
+     * Partial, because a piece has no tracking ID until the depot physically
+     * receives it. A plain unique index treats every unreceived piece's null
+     * as the same value, so the second booking in the system fails to insert.
+     * Uniqueness is only meaningful for IDs that have actually been issued.
+     */
+    {
+      key: { trackingId: 1 },
+      unique: true,
+      name: 'piece_tracking_issued_unique',
+      partialFilterExpression: { trackingId: { $type: 'string' } },
+    },
     { key: { bookingId: 1, status: 1 }, name: 'piece_by_booking' },
     { key: { containerId: 1, status: 1 }, name: 'piece_by_container' },
     { key: { depotId: 1, status: 1, receivedAt: -1 }, name: 'piece_intake_queue' },
@@ -157,6 +229,13 @@ export const ensureIndexes = async (): Promise<void> => {
     { key: { staffId: 1 }, name: 'session_by_staff' },
     // Mongo evicts dead sessions for us; nothing has to remember to sweep.
     { key: { expiresAt: 1 }, name: 'session_ttl', expireAfterSeconds: 0 },
+  ]);
+
+  await database.collection(COLLECTIONS.documents).createIndexes([
+    // One BOL number per container, enforced by the database rather than by
+    // hoping two people never open it at the same moment.
+    { key: { key: 1 }, unique: true, name: 'document_key_unique' },
+    { key: { kind: 1 }, name: 'document_by_kind' },
   ]);
 
   await database.collection(COLLECTIONS.counters).createIndexes([

@@ -6,6 +6,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { env } from './config/env.js';
 import { adminRoutes } from './modules/admin/routes.js';
+import { bookingRoutes } from './modules/bookings/routes.js';
+import { containerRoutes } from './modules/containers/routes.js';
+import { depotRoutes } from './modules/depot/routes.js';
+import { documentRoutes } from './modules/documents/routes.js';
 import { attachStaff, authRoutes } from './modules/auth/routes.js';
 import { pricingRoutes } from './modules/pricing/routes.js';
 import { shipmentRoutes } from './modules/shipments/routes.js';
@@ -93,6 +97,10 @@ export const buildServer = async (): Promise<FastifyInstance> => {
   await app.register(adminRoutes);
   await app.register(pricingRoutes);
   await app.register(shipmentRoutes);
+  await app.register(bookingRoutes);
+  await app.register(depotRoutes);
+  await app.register(containerRoutes);
+  await app.register(documentRoutes);
 
   return app;
 };
