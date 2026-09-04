@@ -5,6 +5,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { env } from './config/env.js';
 import { pricingRoutes } from './modules/pricing/routes.js';
+import { shipmentRoutes } from './modules/shipments/routes.js';
 import { AppError } from './shared/errors.js';
 
 export const buildServer = async (): Promise<FastifyInstance> => {
@@ -81,6 +82,7 @@ export const buildServer = async (): Promise<FastifyInstance> => {
   }));
 
   await app.register(pricingRoutes);
+  await app.register(shipmentRoutes);
 
   return app;
 };
