@@ -5,7 +5,7 @@ import type { QuoteRequest } from './types.js';
 import { formatVolume, volumeOf } from '../../shared/units.js';
 
 /**
- * Booking BK-26-8817 is the worked example the UI deck and the architecture
+ * The worked example carried through the UI deck and the architecture
  * document both quote. If these numbers ever move, a screen somewhere is lying
  * to a customer.
  */

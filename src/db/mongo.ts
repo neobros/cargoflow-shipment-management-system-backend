@@ -1,4 +1,11 @@
-import { MongoClient, type ClientSession, type Collection, type Db, type Document } from 'mongodb';
+import {
+  MongoClient,
+  type ClientSession,
+  type Collection,
+  type Db,
+  type Document,
+  type IndexDescription,
+} from 'mongodb';
 import { env } from '../config/env.js';
 
 /**
@@ -142,25 +149,47 @@ const dropIfPresent = async (collectionName: string, indexName: string): Promise
   }
 };
 
+/**
+ * Create one collection's indexes, saying which collection when it goes wrong.
+ *
+ * The driver's own error names the index but not the collection, and at boot
+ * that is the difference between a one-line fix and reading the whole file.
+ */
+const indexesFor = async (
+  name: (typeof COLLECTIONS)[keyof typeof COLLECTIONS],
+  specs: IndexDescription[],
+): Promise<void> => {
+  try {
+    await getDb().collection(name).createIndexes(specs);
+  } catch (error) {
+    throw new Error(
+      `Could not create indexes on "${name}": ${(error as Error).message}`,
+      { cause: error },
+    );
+  }
+};
+
 export const ensureIndexes = async (): Promise<void> => {
   const database = getDb();
 
   // Superseded by piece_tracking_issued_unique below.
   await dropIfPresent(COLLECTIONS.pieces, 'piece_tracking_unique');
 
-  await database.collection(COLLECTIONS.customers).createIndexes([
+  await indexesFor(COLLECTIONS.customers, [
+    // A returning customer is matched on mobile, not email: households share an
+    // email far more often than they share a phone, and the mobile is what the
+    // SMS goes to.
     { key: { mobile: 1 }, unique: true, name: 'customer_mobile_unique' },
     { key: { reference: 1 }, unique: true, name: 'customer_reference_unique' },
-    { key: { mobile: 1 }, unique: true, name: 'customer_mobile_unique' },
   ]);
 
-  await database.collection(COLLECTIONS.bookings).createIndexes([
+  await indexesFor(COLLECTIONS.bookings, [
     { key: { reference: 1 }, unique: true, name: 'booking_reference_unique' },
     { key: { customerId: 1, createdAt: -1 }, name: 'booking_by_customer' },
     { key: { status: 1, createdAt: -1 }, name: 'booking_by_status' },
   ]);
 
-  await database.collection(COLLECTIONS.pieces).createIndexes([
+  await indexesFor(COLLECTIONS.pieces, [
     /**
      * Partial, because a piece has no tracking ID until the depot physically
      * receives it. A plain unique index treats every unreceived piece's null
@@ -178,11 +207,11 @@ export const ensureIndexes = async (): Promise<void> => {
     { key: { depotId: 1, status: 1, receivedAt: -1 }, name: 'piece_intake_queue' },
   ]);
 
-  await database.collection(COLLECTIONS.quotes).createIndexes([
+  await indexesFor(COLLECTIONS.quotes, [
     { key: { bookingId: 1, createdAt: -1 }, name: 'quote_by_booking' },
   ]);
 
-  await database.collection(COLLECTIONS.adjustments).createIndexes([
+  await indexesFor(COLLECTIONS.adjustments, [
     { key: { bookingId: 1 }, name: 'adjustment_by_booking' },
     // The exceptions queue only ever asks for the unsettled ones.
     {
@@ -193,23 +222,23 @@ export const ensureIndexes = async (): Promise<void> => {
     { key: { autoApproveAt: 1 }, name: 'adjustment_auto_approve', sparse: true },
   ]);
 
-  await database.collection(COLLECTIONS.containers).createIndexes([
+  await indexesFor(COLLECTIONS.containers, [
     { key: { containerNumber: 1 }, unique: true, name: 'container_number_unique' },
     { key: { status: 1, cutOffAt: 1 }, name: 'container_open' },
   ]);
 
-  await database.collection(COLLECTIONS.invoices).createIndexes([
+  await indexesFor(COLLECTIONS.invoices, [
     { key: { number: 1 }, unique: true, name: 'invoice_number_unique' },
     { key: { bookingId: 1 }, name: 'invoice_by_booking' },
     { key: { status: 1, dueAt: 1 }, name: 'invoice_overdue' },
   ]);
 
-  await database.collection(COLLECTIONS.rateCards).createIndexes([
+  await indexesFor(COLLECTIONS.rateCards, [
     { key: { version: 1 }, unique: true, name: 'rate_card_version_unique' },
     { key: { effectiveFrom: -1 }, name: 'rate_card_effective' },
   ]);
 
-  await database.collection(COLLECTIONS.notifications).createIndexes([
+  await indexesFor(COLLECTIONS.notifications, [
     // One notification per (entity, event, channel). A retried worker cannot
     // send a second SMS about the same adjustment.
     {
@@ -220,25 +249,25 @@ export const ensureIndexes = async (): Promise<void> => {
     { key: { status: 1, createdAt: -1 }, name: 'notification_by_status' },
   ]);
 
-  await database.collection(COLLECTIONS.staff).createIndexes([
+  await indexesFor(COLLECTIONS.staff, [
     { key: { email: 1 }, unique: true, name: 'staff_email_unique' },
   ]);
 
-  await database.collection(COLLECTIONS.sessions).createIndexes([
+  await indexesFor(COLLECTIONS.sessions, [
     { key: { tokenHash: 1 }, unique: true, name: 'session_token_unique' },
     { key: { staffId: 1 }, name: 'session_by_staff' },
     // Mongo evicts dead sessions for us; nothing has to remember to sweep.
     { key: { expiresAt: 1 }, name: 'session_ttl', expireAfterSeconds: 0 },
   ]);
 
-  await database.collection(COLLECTIONS.documents).createIndexes([
+  await indexesFor(COLLECTIONS.documents, [
     // One BOL number per container, enforced by the database rather than by
     // hoping two people never open it at the same moment.
     { key: { key: 1 }, unique: true, name: 'document_key_unique' },
     { key: { kind: 1 }, name: 'document_by_kind' },
   ]);
 
-  await database.collection(COLLECTIONS.counters).createIndexes([
+  await indexesFor(COLLECTIONS.counters, [
     { key: { _id: 1 }, name: 'counter_id' },
   ]);
 };

@@ -2,7 +2,6 @@ import { env } from './config/env.js';
 import { closeDatabase, connectToDatabase, ensureIndexes, ensureTimeSeriesCollections } from './db/mongo.js';
 import { seedRateCards } from './db/seed.js';
 import { seedStaff } from './modules/auth/seed.js';
-import { seedDemoShipment } from './modules/shipments/demo-seed.js';
 import { buildServer } from './server.js';
 
 const start = async (): Promise<void> => {
@@ -11,10 +10,6 @@ const start = async (): Promise<void> => {
   await ensureIndexes();
   await seedRateCards();
   await seedStaff();
-
-  // Development convenience: one real shipment so /track works from minute one.
-  // Guarded inside on the booking count, so it never touches a used database.
-  if (env.NODE_ENV !== 'production') await seedDemoShipment();
 
   const app = await buildServer();
 

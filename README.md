@@ -35,7 +35,9 @@ Production refuses to start without one.
 | `npm test` | Pricing engine test suite |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run build` | Compile to `dist/` |
-| `npm run seed` | Seed rate cards into a real database |
+| `npm run seed` | Write the rate cards into a real database |
+| `node scripts/walk-the-brief.py` | Drive every requirement over HTTP against a running API |
+| `node scripts/reset-data.mjs` | Show what a data reset would remove (add `--yes` to do it) |
 
 ---
 
@@ -141,11 +143,32 @@ curl -s localhost:4000/v1/quotes/estimate \
        "pieces":[{"packaging":"large_box","lengthMm":600,"widthMm":450,"heightMm":450,"weightGrams":24000}]}'
 ```
 
+## No sample shipments
+
+Nothing operational is seeded. A fresh database has rate cards and staff
+accounts and nothing else — no bookings, no containers, no invoices — so the
+first booking anyone makes is `BK-26-0001` and everything on every screen is
+something a person actually did.
+
+Two things are still written at boot, because without them the system cannot
+run at all rather than merely looking empty:
+
+- **Rate cards** (v12 live, v13 effective 01 Oct). Nothing can be priced
+  without one, and they are configuration, not sample data.
+- **Staff accounts**, in development only — one per role, so the separation of
+  duties can be walked rather than described. Production seeds none and the
+  first administrator is created out of band.
+
+`node scripts/reset-data.mjs` empties the operational collections again and
+restarts the reference numbering. It refuses to run against
+`NODE_ENV=production`.
+
 ## Worked example
 
-Booking `BK-26-8817` — four boxes, Colombo to Melbourne. The figures below appear
-in the UI deck, the architecture document and the test suite, and they are
-produced by the engine rather than typed in anywhere.
+Four boxes, Colombo to Melbourne. These figures appear in the UI deck, the
+architecture document and the test suite, and are produced by the engine rather
+than typed in anywhere. They are a fixture inside the test, not a row in any
+database.
 
 | | Declared | Verified |
 | --- | --- | --- |

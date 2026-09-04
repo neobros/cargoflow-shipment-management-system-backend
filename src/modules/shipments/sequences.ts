@@ -31,14 +31,14 @@ const nextValue = async (name: string): Promise<number> => {
 
 const yy = (at: Date) => String(at.getUTCFullYear()).slice(2);
 
-/** BK-26-8817 — the number on the confirmation email. */
+/** BK-26-0001 — the number on the confirmation email. */
 export const nextBookingReference = async (at = new Date()): Promise<string> => {
   const n = await nextValue(`booking-${at.getUTCFullYear()}`);
   return `BK-${yy(at)}-${String(n).padStart(4, '0')}`;
 };
 
 /**
- * CF-8817-001 — booking digits, then the piece's position within it.
+ * CF-0001-001 — booking digits, then the piece's position within it.
  *
  * Deriving it from the booking reference means a label found on a warehouse
  * floor identifies its shipment without a database, and the sequence is stable
