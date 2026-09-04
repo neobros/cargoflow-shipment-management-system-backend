@@ -17,6 +17,8 @@ export const COLLECTIONS = {
   documents: 'documents',
   notifications: 'notifications',
   rateCards: 'rateCards',
+  staff: 'staff',
+  sessions: 'sessions',
   counters: 'counters',
   /** Time-series, append-only. Never updated. */
   pieceEvents: 'pieceEvents',
@@ -144,6 +146,17 @@ export const ensureIndexes = async (): Promise<void> => {
       name: 'notification_idempotency',
     },
     { key: { status: 1, createdAt: -1 }, name: 'notification_by_status' },
+  ]);
+
+  await database.collection(COLLECTIONS.staff).createIndexes([
+    { key: { email: 1 }, unique: true, name: 'staff_email_unique' },
+  ]);
+
+  await database.collection(COLLECTIONS.sessions).createIndexes([
+    { key: { tokenHash: 1 }, unique: true, name: 'session_token_unique' },
+    { key: { staffId: 1 }, name: 'session_by_staff' },
+    // Mongo evicts dead sessions for us; nothing has to remember to sweep.
+    { key: { expiresAt: 1 }, name: 'session_ttl', expireAfterSeconds: 0 },
   ]);
 
   await database.collection(COLLECTIONS.counters).createIndexes([

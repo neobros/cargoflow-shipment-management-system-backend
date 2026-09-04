@@ -1,6 +1,7 @@
 import { env } from './config/env.js';
 import { closeDatabase, connectToDatabase, ensureIndexes, ensureTimeSeriesCollections } from './db/mongo.js';
 import { seedRateCards } from './db/seed.js';
+import { seedStaff } from './modules/auth/seed.js';
 import { seedDemoShipment } from './modules/shipments/demo-seed.js';
 import { buildServer } from './server.js';
 
@@ -9,6 +10,7 @@ const start = async (): Promise<void> => {
   await ensureTimeSeriesCollections();
   await ensureIndexes();
   await seedRateCards();
+  await seedStaff();
 
   // Development convenience: one real shipment so /track works from minute one.
   if (connection.inMemory) await seedDemoShipment();

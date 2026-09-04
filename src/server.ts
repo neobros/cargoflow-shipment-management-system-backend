@@ -1,9 +1,12 @@
+import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { env } from './config/env.js';
+import { adminRoutes } from './modules/admin/routes.js';
+import { attachStaff, authRoutes } from './modules/auth/routes.js';
 import { pricingRoutes } from './modules/pricing/routes.js';
 import { shipmentRoutes } from './modules/shipments/routes.js';
 import { AppError } from './shared/errors.js';
@@ -21,6 +24,11 @@ export const buildServer = async (): Promise<FastifyInstance> => {
     genReqId: () => crypto.randomUUID(),
   });
 
+  await app.register(cookie);
+
+  // Root scope on purpose. Fastify encapsulates plugins, so a preHandler
+  // registered inside the auth plugin would never run for admin routes.
+  app.addHook('preHandler', attachStaff);
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
     origin: env.corsOrigins.length > 0 ? env.corsOrigins : true,
@@ -81,6 +89,8 @@ export const buildServer = async (): Promise<FastifyInstance> => {
     time: new Date().toISOString(),
   }));
 
+  await app.register(authRoutes);
+  await app.register(adminRoutes);
   await app.register(pricingRoutes);
   await app.register(shipmentRoutes);
 
