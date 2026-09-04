@@ -28,6 +28,29 @@ export const buildServer = async (): Promise<FastifyInstance> => {
     genReqId: () => crypto.randomUUID(),
   });
 
+  /**
+   * Treat an empty body as an empty object.
+   *
+   * Several routes take no body at all — issue this invoice, mark it paid —
+   * and clients routinely set `content-type: application/json` on every POST
+   * regardless. Fastify's default parser rejects that combination with a 400
+   * before the handler is reached, which looks exactly like a business rule
+   * refusing the request. It isn't one.
+   */
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (_request, body: string, done) => {
+      if (body === '' || body === undefined) return done(null, {});
+      try {
+        done(null, JSON.parse(body));
+      } catch (error) {
+        (error as { statusCode?: number }).statusCode = 400;
+        done(error as Error, undefined);
+      }
+    },
+  );
+
   await app.register(cookie);
 
   // Root scope on purpose. Fastify encapsulates plugins, so a preHandler
