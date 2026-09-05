@@ -1,0 +1,134 @@
+import cookie from '@fastify/cookie';
+import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { ZodError } from 'zod';
+import { env } from './config/env.js';
+import { adminRoutes } from './modules/admin/routes.js';
+import { bookingRoutes } from './modules/bookings/routes.js';
+import { containerRoutes } from './modules/containers/routes.js';
+import { depotRoutes } from './modules/depot/routes.js';
+import { documentRoutes } from './modules/documents/routes.js';
+import { attachStaff, authRoutes } from './modules/auth/routes.js';
+import { attachCustomer, customerRoutes } from './modules/customers/routes.js';
+import { pricingRoutes } from './modules/pricing/routes.js';
+import { shipmentRoutes } from './modules/shipments/routes.js';
+import { AppError } from './shared/errors.js';
+
+export const buildServer = async (): Promise<FastifyInstance> => {
+  const app = Fastify({
+    logger: {
+      level: env.LOG_LEVEL,
+      transport: env.isProduction
+        ? undefined
+        : { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } },
+    },
+    // Every request carries an id through its logs, and through any job it
+    // enqueues, so one customer's journey can be followed across retries.
+    genReqId: () => crypto.randomUUID(),
+  });
+
+  /**
+   * Treat an empty body as an empty object.
+   *
+   * Several routes take no body at all — issue this invoice, mark it paid —
+   * and clients routinely set `content-type: application/json` on every POST
+   * regardless. Fastify's default parser rejects that combination with a 400
+   * before the handler is reached, which looks exactly like a business rule
+   * refusing the request. It isn't one.
+   */
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (_request, body: string, done) => {
+      if (body === '' || body === undefined) return done(null, {});
+      try {
+        done(null, JSON.parse(body));
+      } catch (error) {
+        (error as { statusCode?: number }).statusCode = 400;
+        done(error as Error, undefined);
+      }
+    },
+  );
+
+  await app.register(cookie);
+
+  // Root scope on purpose. Fastify encapsulates plugins, so a preHandler
+  // registered inside the auth plugin would never run for admin routes.
+  app.addHook('preHandler', attachStaff);
+  // Both run on every request and neither evicts the other: the same browser
+  // can hold a customer session at home and a staff session at work.
+  app.addHook('preHandler', attachCustomer);
+  await app.register(helmet, { contentSecurityPolicy: false });
+  await app.register(cors, {
+    origin: env.corsOrigins.length > 0 ? env.corsOrigins : true,
+    credentials: true,
+  });
+  await app.register(rateLimit, {
+    max: 240,
+    timeWindow: '1 minute',
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    if (error instanceof AppError) {
+      request.log.warn({ code: error.code, details: error.details }, error.message);
+      return reply.status(error.statusCode).send({
+        error: { code: error.code, message: error.message, details: error.details ?? null },
+      });
+    }
+
+    if (error instanceof ZodError) {
+      return reply.status(400).send({
+        error: { code: 'validation_failed', message: 'Request body is not valid', details: error.flatten() },
+      });
+    }
+
+    // Fastify's own errors (rate limit, body parsing) carry a statusCode.
+    const fastifyError = error as { statusCode?: number; code?: string; message?: string };
+    if (fastifyError.statusCode && fastifyError.statusCode < 500) {
+      return reply.status(fastifyError.statusCode).send({
+        error: {
+          code: fastifyError.code ?? 'request_failed',
+          message: fastifyError.message ?? 'Request failed',
+          details: null,
+        },
+      });
+    }
+
+    request.log.error({ err: error }, 'Unhandled error');
+    return reply.status(500).send({
+      error: {
+        code: 'internal_error',
+        // Never leak a stack trace or a driver message to a browser.
+        message: 'Something went wrong on our side. The team has been notified.',
+        details: null,
+      },
+    });
+  });
+
+  app.setNotFoundHandler((request, reply) =>
+    reply.status(404).send({
+      error: { code: 'route_not_found', message: `No route for ${request.method} ${request.url}`, details: null },
+    }),
+  );
+
+  app.get('/health', async () => ({
+    status: 'ok',
+    service: 'cargoflow-backend',
+    version: '0.1.0',
+    time: new Date().toISOString(),
+  }));
+
+  await app.register(authRoutes);
+  await app.register(adminRoutes);
+  await app.register(pricingRoutes);
+  await app.register(shipmentRoutes);
+  await app.register(customerRoutes);
+  await app.register(bookingRoutes);
+  await app.register(depotRoutes);
+  await app.register(containerRoutes);
+  await app.register(documentRoutes);
+
+  return app;
+};
