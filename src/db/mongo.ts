@@ -26,6 +26,7 @@ export const COLLECTIONS = {
   rateCards: 'rateCards',
   staff: 'staff',
   sessions: 'sessions',
+  customerSessions: 'customerSessions',
   counters: 'counters',
   /** Time-series, append-only. Never updated. */
   pieceEvents: 'pieceEvents',
@@ -175,12 +176,20 @@ export const ensureIndexes = async (): Promise<void> => {
   // Superseded by piece_tracking_issued_unique below.
   await dropIfPresent(COLLECTIONS.pieces, 'piece_tracking_unique');
 
+  await indexesFor(COLLECTIONS.customerSessions, [
+    { key: { tokenHash: 1 }, unique: true, name: 'customer_session_token_unique' },
+    { key: { customerId: 1 }, name: 'customer_session_by_customer' },
+    { key: { expiresAt: 1 }, name: 'customer_session_ttl', expireAfterSeconds: 0 },
+  ]);
+
   await indexesFor(COLLECTIONS.customers, [
     // A returning customer is matched on mobile, not email: households share an
     // email far more often than they share a phone, and the mobile is what the
     // SMS goes to.
     { key: { mobile: 1 }, unique: true, name: 'customer_mobile_unique' },
     { key: { reference: 1 }, unique: true, name: 'customer_reference_unique' },
+    // The email signs them in; it has to be unique for that to mean anything.
+    { key: { email: 1 }, unique: true, name: 'customer_email_unique' },
   ]);
 
   await indexesFor(COLLECTIONS.bookings, [

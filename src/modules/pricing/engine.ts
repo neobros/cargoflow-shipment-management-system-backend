@@ -154,44 +154,7 @@ export const priceShipment = (request: QuoteRequest, card: RateCard, now: Date =
     });
   }
 
-  if (request.pickupRequested) {
-    lines.push({
-      code: 'origin_pickup',
-      label: 'Collection from your address',
-      basis: '1 shipment',
-      quantity: 1,
-      unitRate: card.surcharges.originPickup,
-      amount: money(card.surcharges.originPickup, currency),
-    });
-  }
-
-  if (request.remoteDelivery) {
-    lines.push({
-      code: 'remote_delivery',
-      label: 'Remote area delivery',
-      basis: '1 shipment',
-      quantity: 1,
-      unitRate: card.surcharges.remoteDelivery,
-      amount: money(card.surcharges.remoteDelivery, currency),
-    });
-  }
-
-  // ── 4. Cover and tax ─────────────────────────────────────────────────────
-  if (request.coverRequested && request.declaredValue > 0) {
-    const pct = applyBasisPoints(money(request.declaredValue, currency), card.cover.basisPoints);
-    const cover = maxMoney(pct, money(card.cover.minimum, currency));
-    lines.push({
-      code: 'cover',
-      label: 'Cargo cover',
-      basis: `${(card.cover.basisPoints / 100).toFixed(1)}% of ${formatMinor(request.declaredValue)}${
-        cover.amount > pct.amount ? ' (minimum applied)' : ''
-      }`,
-      quantity: 1,
-      unitRate: null,
-      amount: cover,
-    });
-  }
-
+  // ── 4. Tax ───────────────────────────────────────────────────────────────
   const subtotal = addMoney(...lines.map((l) => l.amount));
   const tax = applyBasisPoints(subtotal, card.taxBasisPoints);
   lines.push({

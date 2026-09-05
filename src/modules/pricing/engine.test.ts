@@ -12,10 +12,6 @@ import { formatVolume, volumeOf } from '../../shared/units.js';
 const DECLARED: QuoteRequest = {
   lane: 'LKCMB-AUMEL',
   service: 'sea_lcl',
-  declaredValue: 1_800_00,
-  coverRequested: true,
-  pickupRequested: false,
-  remoteDelivery: false,
   pieces: [
     { packaging: 'large_box', lengthMm: 600, widthMm: 450, heightMm: 450, weightGrams: 24_000 },
     { packaging: 'large_box', lengthMm: 600, widthMm: 450, heightMm: 450, weightGrams: 22_500 },
@@ -66,14 +62,13 @@ describe('priceShipment — the booked estimate', () => {
     expect(amounts.freight).toBe(224_38); // 0.5828 m³ @ 385.00
     expect(amounts.handling).toBe(48_00); // 4 @ 12.00
     expect(amounts.customs_clearance).toBe(45_00);
-    expect(amounts.cover).toBe(27_00); // 1.5% of 1,800.00
-    expect(amounts.tax).toBe(34_44);
+    expect(amounts.tax).toBe(31_74);
   });
 
-  it('totals A$378.82', () => {
-    expect(quote.subtotal.amount).toBe(344_38);
-    expect(quote.tax.amount).toBe(34_44);
-    expect(quote.total.amount).toBe(378_82);
+  it('totals A$349.12', () => {
+    expect(quote.subtotal.amount).toBe(317_38);
+    expect(quote.tax.amount).toBe(31_74);
+    expect(quote.total.amount).toBe(349_12);
   });
 
   it('records the rate card version it used', () => {
@@ -94,12 +89,12 @@ describe('priceShipment — the verified re-rate', () => {
     expect(quote.weightGrams).toBe(110_900);
   });
 
-  it('totals A$420.57', () => {
+  it('totals A$390.87', () => {
     const amounts = Object.fromEntries(quote.lines.map((l) => [l.code, l.amount.amount]));
     expect(amounts.freight).toBe(262_34);
-    expect(quote.subtotal.amount).toBe(382_34);
-    expect(quote.tax.amount).toBe(38_23);
-    expect(quote.total.amount).toBe(420_57);
+    expect(quote.subtotal.amount).toBe(355_34);
+    expect(quote.tax.amount).toBe(35_53);
+    expect(quote.total.amount).toBe(390_87);
   });
 
   it('is the same function, not a second implementation', () => {
@@ -120,7 +115,7 @@ describe('assessRerate', () => {
     const a = assessRerate(booked, verified, RATE_CARD_V12, now);
     expect(a.difference.amount).toBe(41_75);
     expect(a.outcome).toBe('approval_required');
-    expect(a.differenceBasisPoints).toBe(1_102); // +11.02%
+    expect(a.differenceBasisPoints).toBe(1_196); // +11.96%
   });
 
   it('names the two pieces that actually moved', () => {
@@ -156,7 +151,7 @@ describe('assessRerate', () => {
   });
 
   it('uses the greater of 2% or A$10, not the lesser', () => {
-    // A$9 on a A$378.82 booking is 2.4% — over the percentage, under the floor.
+    // A$9 on a A$349.12 booking is 2.4% — over the percentage, under the floor.
     // The greater tolerance (A$10) applies, so this is absorbed.
     expect(assessRerate(booked, booked, RATE_CARD_V12, now).toleranceApplied.amount).toBe(10_00);
   });
@@ -194,8 +189,6 @@ describe('lane rules', () => {
     const q = priceShipment(
       {
         ...DECLARED,
-        coverRequested: false,
-        declaredValue: 0,
         pieces: [{ packaging: 'small_box', lengthMm: 400, widthMm: 300, heightMm: 300, weightGrams: 9_000 }],
       },
       RATE_CARD_V12,
@@ -210,10 +203,6 @@ describe('lane rules', () => {
       {
         lane: 'LKCMB-AUMEL',
         service: 'air_express',
-        declaredValue: 0,
-        coverRequested: false,
-        pickupRequested: false,
-        remoteDelivery: false,
         pieces: [{ packaging: 'large_box', lengthMm: 600, widthMm: 450, heightMm: 450, weightGrams: 8_000 }],
       },
       RATE_CARD_V12,
@@ -227,8 +216,6 @@ describe('lane rules', () => {
     const q = priceShipment(
       {
         ...DECLARED,
-        coverRequested: false,
-        declaredValue: 0,
         pieces: [
           { packaging: 'half_pallet', lengthMm: 1_200, widthMm: 800, heightMm: 900, weightGrams: 180_000 },
         ],
@@ -251,8 +238,6 @@ describe('invariants', () => {
       const q = priceShipment(
         {
           ...DECLARED,
-          coverRequested: false,
-          declaredValue: 0,
           pieces: [{ packaging: 'custom_carton', lengthMm: mm, widthMm: mm, heightMm: mm, weightGrams: 20_000 }],
         },
         RATE_CARD_V12,
@@ -267,7 +252,6 @@ describe('invariants', () => {
       const q = priceShipment(
         {
           ...DECLARED,
-          declaredValue: i * 137,
           pieces: [
             { packaging: 'custom_carton', lengthMm: 300 + i, widthMm: 250 + i, heightMm: 200 + i, weightGrams: 1_000 + i * 11 },
           ],

@@ -26,6 +26,8 @@ export type Permission =
   | 'adjustments:approve'
   | 'adjustments:waive'
   | 'invoices:issue'
+  | 'documents:read'
+  | 'customers:read'
   | 'depot:receive'
   | 'depot:verify'
   | 'depot:label'
@@ -43,16 +45,34 @@ export type Permission =
  * can read beats an inheritance chain you have to reason about.
  */
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+  /**
+   * The floor, and only the floor. An operator receives boxes, weighs them,
+   * prints labels and loads containers — that is the whole job, and it is
+   * enough to run a warehouse.
+   *
+   * They can look a shipment up, because they are holding a box and need to
+   * know whose it is. They cannot see the money: not the exceptions queue, not
+   * the price changes, not the invoices. Measuring a box and deciding what it
+   * costs must not be the same pair of hands.
+   */
   operator: [
     'bookings:read',
-    'adjustments:read',
-    'adjustments:remind',
     'depot:receive',
     'depot:verify',
     'depot:label',
     'containers:read',
     'containers:load',
   ],
+
+  /**
+   * The floor, plus responsibility for it. Everything an operator does, plus
+   * closing a container's doors and seeing which shipments on their floor are
+   * held on an unapproved price change — so they know what not to load, and can
+   * chase the customer.
+   *
+   * They still cannot approve one. Being senior on the warehouse floor is not
+   * the same as having authority over a customer's bill.
+   */
   supervisor: [
     'admin:access',
     'bookings:read',
@@ -63,10 +83,18 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'depot:label',
     'containers:read',
     'containers:load',
-    // Sealing is irreversible and needs a second pair of eyes.
     'containers:seal',
     'containers:manage',
+    // A supervisor seals the container and hands the bill of lading over.
+    'documents:read',
   ],
+
+  /**
+   * The money, and none of the floor. Billing approves and waives price
+   * changes, issues invoices and reads rate cards. They can see where cargo is,
+   * because an invoice depends on it — but they never record a measurement,
+   * because then the same person could both invent a difference and approve it.
+   */
   billing: [
     'admin:access',
     'bookings:read',
@@ -75,9 +103,13 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'adjustments:approve',
     'adjustments:waive',
     'invoices:issue',
+    'documents:read',
+    'customers:read',
     'containers:read',
     'rates:read',
   ],
+
+  /** Everything, including publishing rate cards and managing staff. */
   admin: [
     'admin:access',
     'bookings:read',
@@ -86,6 +118,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'adjustments:approve',
     'adjustments:waive',
     'invoices:issue',
+    'documents:read',
+    'customers:read',
     'depot:receive',
     'depot:verify',
     'depot:label',
@@ -97,6 +131,18 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'rates:publish',
     'staff:manage',
   ],
+};
+
+/**
+ * A one-line description of what a role is for, shown next to the person's name
+ * so the boundary is legible rather than something you discover by being
+ * refused.
+ */
+export const ROLE_SCOPE: Record<Role, string> = {
+  operator: 'Receives, weighs, labels and loads',
+  supervisor: 'Runs the floor and seals containers',
+  billing: 'Approves price changes and invoices',
+  admin: 'Full access',
 };
 
 export const can = (role: Role, permission: Permission): boolean =>
@@ -111,6 +157,8 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   'adjustments:approve': 'approve a price change',
   'adjustments:waive': 'waive a price change',
   'invoices:issue': 'issue invoices',
+  'documents:read': 'open shipping documents',
+  'customers:read': 'view the customer directory',
   'depot:receive': 'receive boxes at the depot',
   'depot:verify': 'weigh and measure boxes',
   'depot:label': 'print shipping labels',
@@ -154,6 +202,8 @@ export interface CurrentUser {
   name: string;
   role: Role;
   roleLabel: string;
+  /** What this role is for, in one line. */
+  roleScope: string;
   depotId: string | null;
   permissions: Permission[];
 }
@@ -163,6 +213,7 @@ export const toCurrentUser = (staff: StaffDoc): CurrentUser => ({
   name: staff.name,
   role: staff.role,
   roleLabel: ROLE_LABELS[staff.role],
+  roleScope: ROLE_SCOPE[staff.role],
   depotId: staff.depotId,
   permissions: ROLE_PERMISSIONS[staff.role],
 });

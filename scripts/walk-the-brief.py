@@ -67,7 +67,17 @@ def money(text):
 
 print("=== THE BRIEF, WALKED END TO END ===\n")
 
-print("1.1 item selection  /  1.2 sender and receiver  /  1.3 cost estimation and submission")
+print("1.0 the customer creates an account  (booking is behind sign-in)")
+account = call("POST", "/v1/customer/register", {
+    "name": "Nimali Rathnayake",
+    "email": "nimali@example.lk",
+    "mobile": "+94773334455",
+    "password": "a reasonably long passphrase",
+})
+ok("account created and signed in", "customer" in account,
+   account.get("customer", {}).get("reference", json.dumps(account)[:120]))
+
+print("\n1.1 item selection  /  1.2 sender and receiver  /  1.3 cost estimation and submission")
 created = call(
     "POST",
     "/v1/bookings",

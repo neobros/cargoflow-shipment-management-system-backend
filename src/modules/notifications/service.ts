@@ -1,46 +1,18 @@
-import type { ObjectId } from 'mongodb';
 import { COLLECTIONS, collection } from '../../db/mongo.js';
+import { dispatchPending } from './dispatcher.js';
+import { render, type TemplateData } from './templates.js';
+import type { NotificationChannel, NotificationDoc, NotificationEvent } from './types.js';
+
+export type { NotificationChannel, NotificationDoc, NotificationEvent } from './types.js';
 
 /**
  * Customer notifications.
  *
- * No email or SMS provider is wired up — that is a credential and a contract,
- * not a design decision, and the point of this module is the part that is ours:
- * deciding what to send, to whom, and making sure it is sent exactly once.
- *
- * `queue()` writes the message and returns. A real deployment runs a worker
- * over `status: 'pending'`; here `deliver()` marks them sent so the flow can be
- * followed end to end. The rendered body is stored either way, so what the
- * customer would have received is auditable rather than notional.
+ * This module decides *what* to send and to whom, and guarantees it goes once.
+ * Carrying it is a transport's job (`transports.ts`) and retrying is the
+ * dispatcher's (`dispatcher.ts`). Business code calls `queue()` and moves on —
+ * it never waits on an SMTP handshake to finish serving a request.
  */
-
-export type NotificationChannel = 'email' | 'sms';
-
-export type NotificationEvent =
-  | 'booking_confirmed'
-  | 'received_at_depot'
-  | 'price_changed'
-  | 'price_settled'
-  | 'price_reminder'
-  | 'invoice_issued'
-  | 'loaded_into_container'
-  | 'departed';
-
-export interface NotificationDoc {
-  _id?: ObjectId;
-  /** The thing this is about — booking, adjustment or invoice id, as a string. */
-  entityId: string;
-  event: NotificationEvent;
-  channel: NotificationChannel;
-  to: string;
-  subject: string;
-  body: string;
-  bookingRef: string;
-  status: 'pending' | 'sent' | 'failed' | 'suppressed';
-  createdAt: Date;
-  sentAt: Date | null;
-  error: string | null;
-}
 
 const notifications = () => collection<NotificationDoc>(COLLECTIONS.notifications);
 
@@ -49,8 +21,7 @@ export interface QueueRequest {
   event: NotificationEvent;
   bookingRef: string;
   to: { email?: string; mobile?: string };
-  subject: string;
-  body: string;
+  data: TemplateData;
 }
 
 /**
@@ -62,9 +33,12 @@ export interface QueueRequest {
  * customer already has that message. Anything else is a real error and rethrown.
  */
 export const queue = async (request: QueueRequest): Promise<NotificationDoc[]> => {
-  const targets: { channel: NotificationChannel; to: string }[] = [];
-  if (request.to.email) targets.push({ channel: 'email', to: request.to.email });
-  if (request.to.mobile) targets.push({ channel: 'sms', to: request.to.mobile });
+  const rendered = render(request.event, request.data);
+  const now = new Date();
+
+  const targets: { channel: NotificationChannel; to: string; body: string }[] = [];
+  if (request.to.email) targets.push({ channel: 'email', to: request.to.email, body: rendered.email });
+  if (request.to.mobile) targets.push({ channel: 'sms', to: request.to.mobile, body: rendered.sms });
 
   const written: NotificationDoc[] = [];
 
@@ -74,15 +48,18 @@ export const queue = async (request: QueueRequest): Promise<NotificationDoc[]> =
       event: request.event,
       channel: target.channel,
       to: target.to,
-      subject: request.subject,
-      // An SMS is not a shortened email. 160 characters, no subject line, and
-      // the tracking link has to survive being read aloud.
-      body: target.channel === 'sms' ? smsBody(request) : request.body,
+      subject: rendered.subject,
+      body: target.body,
       bookingRef: request.bookingRef,
       status: 'pending',
-      createdAt: new Date(),
-      sentAt: null,
+      attempts: 0,
+      lastAttemptAt: null,
+      nextAttemptAt: now,
+      providerId: null,
+      transport: null,
       error: null,
+      createdAt: now,
+      sentAt: null,
     };
 
     try {
@@ -97,44 +74,19 @@ export const queue = async (request: QueueRequest): Promise<NotificationDoc[]> =
   return written;
 };
 
-const smsBody = (request: QueueRequest): string => {
-  const first = request.body.split('\n').find((line) => line.trim().length > 0) ?? request.subject;
-  const trimmed = first.trim();
-  const suffix = ` Track: ${request.bookingRef}`;
-  const room = 160 - suffix.length;
-  return (trimmed.length > room ? `${trimmed.slice(0, room - 1)}…` : trimmed) + suffix;
-};
-
 /**
- * Hand the queue to the provider. There isn't one, so this only flips the
- * state — but it is the seam a real ESP drops into, and everything downstream
- * already reads `sentAt`.
+ * Queue, then try immediately rather than waiting for the next tick.
+ *
+ * "Real-time notification of a price adjustment" is requirement 3.1, and up to
+ * fifteen seconds of queue latency is not what anyone means by real time when
+ * the customer is standing at the counter. The dispatcher still owns retries;
+ * this only skips the wait for the happy path, and never lets a transport
+ * failure surface as a failed booking.
  */
-export const deliver = async (limit = 50): Promise<number> => {
-  const pending = await notifications()
-    .find({ status: 'pending' })
-    .sort({ createdAt: 1 })
-    .limit(limit)
-    .toArray();
-
-  if (pending.length === 0) return 0;
-
-  await notifications().updateMany(
-    { _id: { $in: pending.map((n) => n._id!) } },
-    { $set: { status: 'sent', sentAt: new Date() } },
-  );
-
-  return pending.length;
-};
-
-/** Queue and hand over in one step, for flows that have nothing else to do. */
 export const send = async (request: QueueRequest): Promise<void> => {
   const written = await queue(request);
   if (written.length === 0) return;
-  await notifications().updateMany(
-    { entityId: request.entityId, event: request.event, status: 'pending' },
-    { $set: { status: 'sent', sentAt: new Date() } },
-  );
+  await dispatchPending(written.length).catch(() => undefined);
 };
 
 export const listForBooking = async (bookingRef: string): Promise<NotificationDoc[]> =>
@@ -142,3 +94,21 @@ export const listForBooking = async (bookingRef: string): Promise<NotificationDo
 
 export const listRecent = async (limit = 60): Promise<NotificationDoc[]> =>
   notifications().find({}).sort({ createdAt: -1 }).limit(limit).toArray();
+
+/** What the operations panel shows at a glance. */
+export const queueHealth = async (): Promise<{
+  pending: number;
+  failed: number;
+  sentToday: number;
+}> => {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const [pending, failed, sentToday] = await Promise.all([
+    notifications().countDocuments({ status: 'pending' }),
+    notifications().countDocuments({ status: 'failed' }),
+    notifications().countDocuments({ status: 'sent', sentAt: { $gte: startOfDay } }),
+  ]);
+
+  return { pending, failed, sentToday };
+};

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { badRequest } from '../../shared/errors.js';
+import { requireCustomer } from '../customers/routes.js';
 import { CreateBooking, createBooking, previewTrackingIds } from './service.js';
 
 export const bookingRoutes = async (app: FastifyInstance): Promise<void> => {
@@ -7,12 +8,15 @@ export const bookingRoutes = async (app: FastifyInstance): Promise<void> => {
    * Requirements 1.1, 1.2 and 1.3 land here together: the pieces the customer
    * chose, both parties in full, and the submission itself.
    *
-   * Public and unauthenticated, like the quote that precedes it. Requiring an
-   * account before a stranger can send a box loses the booking; the mobile
-   * number in the sender block is the identity, and it is verified by the fact
-   * that the tracking link and the price-change SMS both go to it.
+   * Requires a signed-in customer. The quote before it stays public — anyone
+   * can price a shipment without identifying themselves — but the booking is
+   * attached to an account, so "my shipments" and "my invoices" can be scoped
+   * by the session rather than by a reference anyone could guess.
+   *
+   * The sender block is still asked for separately, because the person paying
+   * is not always the person whose door the boxes are collected from.
    */
-  app.post('/v1/bookings', async (request, reply) => {
+  app.post('/v1/bookings', { preHandler: requireCustomer }, async (request, reply) => {
     const parsed = CreateBooking.safeParse(request.body);
     if (!parsed.success) {
       throw badRequest(
@@ -22,7 +26,7 @@ export const bookingRoutes = async (app: FastifyInstance): Promise<void> => {
       );
     }
 
-    const booking = await createBooking(parsed.data);
+    const booking = await createBooking(parsed.data, request.customer!);
     reply.code(201);
     return {
       booking,

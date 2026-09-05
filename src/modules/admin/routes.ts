@@ -1,9 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { AppError } from '../../shared/errors.js';
+import { AppError, badRequest } from '../../shared/errors.js';
 import { requireStaff } from '../auth/routes.js';
 import { getActiveRateCard } from '../pricing/repository.js';
 import { formatMinor } from '../../shared/units.js';
+import { getCustomer, listCustomers } from './customers.js';
+import { compareToLive, listRateCards, PublishRateCard, publishRateCard } from './rate-cards.js';
 import {
   buildOverview,
   findAdjustments,
@@ -13,6 +15,44 @@ import {
 } from './service.js';
 
 export const adminRoutes = async (app: FastifyInstance): Promise<void> => {
+  /** Every rate card, past, live and scheduled. */
+  app.get('/v1/admin/rate-cards', { preHandler: requireStaff('rates:read') }, async () =>
+    listRateCards(),
+  );
+
+  /**
+   * Publish a new version. Never an edit — a booking keeps the version it was
+   * quoted on, so changing a live card would rewrite what unsettled shipments
+   * are worth.
+   */
+  app.post('/v1/admin/rate-cards', { preHandler: requireStaff('rates:publish') }, async (request) => {
+    const parsed = PublishRateCard.safeParse(request.body);
+    if (!parsed.success) {
+      throw badRequest('That rate card does not look right', 'invalid_rate_card', parsed.error.flatten());
+    }
+    return { card: await publishRateCard(parsed.data) };
+  });
+
+  /** What would change, before anyone commits to it. */
+  app.post('/v1/admin/rate-cards/preview', { preHandler: requireStaff('rates:read') }, async (request) => {
+    const parsed = PublishRateCard.safeParse(request.body);
+    if (!parsed.success) {
+      throw badRequest('That rate card does not look right', 'invalid_rate_card', parsed.error.flatten());
+    }
+    return compareToLive(parsed.data);
+  });
+
+  app.get('/v1/admin/customers', { preHandler: requireStaff('customers:read') }, async (request) => {
+    const query = request.query as { search?: string };
+    return listCustomers(query.search?.trim() || undefined);
+  });
+
+  app.get<{ Params: { reference: string } }>(
+    '/v1/admin/customers/:reference',
+    { preHandler: requireStaff('customers:read') },
+    async (request) => getCustomer(request.params.reference),
+  );
+
   app.get('/v1/admin/overview', { preHandler: requireStaff('admin:access') }, async () =>
     buildOverview(),
   );
@@ -110,7 +150,6 @@ export const adminRoutes = async (app: FastifyInstance): Promise<void> => {
             : formatMinor(Number(value)),
         ]),
       ),
-      cover: { percent: (card.cover.basisPoints / 100).toFixed(1), minimum: formatMinor(card.cover.minimum) },
       taxPercent: (card.taxBasisPoints / 100).toFixed(0),
       tolerance: {
         percent: (card.rerateTolerance.basisPoints / 100).toFixed(0),

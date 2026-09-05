@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { badRequest } from '../../shared/errors.js';
 import { requireStaff } from '../auth/routes.js';
+import { bolPdf } from '../documents/pdf.js';
 import { buildBol } from '../documents/service.js';
 import {
   CreateContainer,
@@ -77,10 +78,29 @@ export const containerRoutes = async (app: FastifyInstance): Promise<void> => {
     },
   );
 
-  /** 3.2 — the Master Bill of Lading for this container. */
+  /**
+   * 3.2 — the Master Bill of Lading for this container.
+   *
+   * Not `containers:read`: the bill names every shipper and consignee with
+   * their full address, which is more than someone who only loads boxes needs
+   * to see.
+   */
   app.get<{ Params: { containerNumber: string } }>(
     '/v1/containers/:containerNumber/bol',
-    { preHandler: requireStaff('containers:read') },
+    { preHandler: requireStaff('documents:read') },
     async (request) => ({ bol: await buildBol(decodeURIComponent(request.params.containerNumber)) }),
+  );
+
+  /** The same bill as a file, for the carrier and the customs broker. */
+  app.get<{ Params: { containerNumber: string } }>(
+    '/v1/containers/:containerNumber/bol.pdf',
+    { preHandler: requireStaff('documents:read') },
+    async (request, reply) => {
+      const bol = await buildBol(decodeURIComponent(request.params.containerNumber));
+      reply
+        .type('application/pdf')
+        .header('content-disposition', `attachment; filename="${bol.number}.pdf"`);
+      return bolPdf(bol);
+    },
   );
 };

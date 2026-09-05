@@ -5,11 +5,18 @@ import { formatMinor, formatMoney, formatVolume, money } from '../../shared/unit
 import { LANES } from '../pricing/rate-cards.js';
 import {
   findContainer,
+  findEventsForBooking,
   findOpenAdjustment,
   findPiecesForBooking,
   resolveReference,
 } from './repository.js';
-import { PIECE_STATUS_LABELS, type AdjustmentDoc, type BookingDoc, type PieceDoc } from './types.js';
+import {
+  PIECE_STATUS_LABELS,
+  type AdjustmentDoc,
+  type BookingDoc,
+  type PieceDoc,
+  type PieceEventDoc,
+} from './types.js';
 
 /** The lane knows the port pair; the receiver's suburb is not the destination. */
 const routeFor = (lane: string, fallbackTo: string) => {
@@ -31,6 +38,7 @@ const buildTimeline = (
   pieces: PieceDoc[],
   adjustment: AdjustmentDoc | null,
   container: Awaited<ReturnType<typeof findContainer>>,
+  events: PieceEventDoc[],
 ): Stage[] => {
   const receivedCount = pieces.filter((p) => p.receivedAt).length;
   const receivedAt = pieces.map((p) => p.receivedAt).filter(Boolean).sort()[0] ?? null;
@@ -38,11 +46,23 @@ const buildTimeline = (
   const awaitingCustomer = adjustment?.state === 'awaiting_approval';
   const loaded = pieces.some((p) => p.containerId);
 
+  // Loading and sailing leave no timestamp on the piece, but they do leave an
+  // audit event. Reading it back means a completed stage can show its date
+  // instead of a tick with no when.
+  const firstEventAt = (code: PieceEventDoc['code']): string | null => {
+    const at = events.filter((event) => event.code === code).map((event) => event.at).sort()[0];
+    return at ? new Date(at).toISOString() : null;
+  };
+
+  const sailed =
+    pieces.some((piece) => piece.status === 'in_transit') ||
+    (container ? ['in_transit', 'arrived', 'devanned'].includes(container.status) : false);
+
   return [
     {
       code: 'booked',
-      title: 'You booked and paid',
-      detail: `${formatMoney(money(booking.bookedQuote.total.amount))} on your card · drop-off slip emailed`,
+      title: 'You booked online',
+      detail: `${formatMoney(money(booking.bookedQuote.total.amount))} estimated · drop-off details emailed`,
       at: booking.createdAt.toISOString(),
       state: 'done',
     },
@@ -68,18 +88,27 @@ const buildTimeline = (
     {
       code: 'loaded',
       title: 'Loaded into the container',
-      detail: container
-        ? `Next one out closes on ${container.cutOffAt.toLocaleDateString('en-AU', { day: 'numeric', month: 'long' })}`
-        : 'Waiting for the next container',
-      at: null,
+      detail:
+        loaded && container
+          ? `Container ${container.containerNumber} · ${container.vessel} ${container.voyage}`
+          : container
+            ? `Next one out closes on ${container.cutOffAt.toLocaleDateString('en-AU', { day: 'numeric', month: 'long' })}`
+            : 'Waiting for the next container',
+      at: firstEventAt('loaded'),
       state: loaded ? 'done' : 'pending',
     },
     {
       code: 'in_transit',
+      // This was hardcoded to 'pending', so a customer whose boxes were sealed
+      // and sailing was still told they had not left.
       title: 'On the water',
-      detail: container ? `${container.vessel}, Colombo to ${container.destinationLabel}` : 'Not yet sailed',
-      at: null,
-      state: 'pending',
+      detail: container
+        ? sailed
+          ? `${container.vessel} ${container.voyage}, arriving ${container.etaAt.toLocaleDateString('en-AU', { day: 'numeric', month: 'long' })}`
+          : `${container.vessel}, Colombo to ${container.destinationLabel}`
+        : 'Not yet sailed',
+      at: firstEventAt('sealed'),
+      state: sailed ? 'done' : 'pending',
     },
     {
       code: 'delivered',
@@ -123,6 +152,7 @@ export const shipmentRoutes = async (app: FastifyInstance): Promise<void> => {
     const pieces = await findPiecesForBooking(booking._id!);
     const adjustment = await findOpenAdjustment(booking._id!);
     const container = await findContainer(pieces.find((p) => p.containerId)?.containerId ?? null);
+    const events = await findEventsForBooking(booking.reference);
 
     const payable = booking.verifiedQuote && adjustment?.state !== 'awaiting_approval'
       ? booking.verifiedQuote.total.amount
@@ -150,7 +180,7 @@ export const shipmentRoutes = async (app: FastifyInstance): Promise<void> => {
         verified: piece.verified ? presentMeasurement(piece.verified) : null,
         changed: piece.status === 'rerate_held',
       })),
-      timeline: buildTimeline(booking, pieces, adjustment, container),
+      timeline: buildTimeline(booking, pieces, adjustment, container, events),
       adjustment: adjustment
         ? {
             reference: adjustment.reference,

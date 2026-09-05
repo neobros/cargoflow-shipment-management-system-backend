@@ -59,16 +59,9 @@ export const RATE_CARD_V12: RateCard = {
   surcharges: {
     handlingPerPiece: 12_00,
     customsClearance: 45_00,
-    originPickup: 25_00,
-    remoteDelivery: 55_00,
     oversizePiece: 35_00,
     oversizeLongestSideMm: 1_200,
     oversizeWeightGrams: 45_000,
-  },
-
-  cover: {
-    basisPoints: 150, // 1.5%
-    minimum: 10_00,
   },
 
   taxBasisPoints: 1_000, // 10% GST
@@ -92,6 +85,12 @@ export const LANES = [
  * The packaging presets the booking wizard offers. Dimensions are nominal —
  * whatever the customer picks, the depot measures the real thing on arrival.
  */
+/**
+ * The one packaging kind whose dimensions the customer supplies. Everything
+ * else is a box we hand them, at a size we already know.
+ */
+export const CUSTOM_PACKAGING = 'custom_carton';
+
 export const PACKAGING_PRESETS = [
   {
     kind: 'small_box',
@@ -130,15 +129,6 @@ export const PACKAGING_PRESETS = [
     weightGrams: 28_000,
   },
   {
-    kind: 'custom_carton',
-    name: 'Your own carton',
-    note: 'Any size you like',
-    lengthMm: 700,
-    widthMm: 500,
-    heightMm: 450,
-    weightGrams: 31_000,
-  },
-  {
     kind: 'half_pallet',
     name: 'Half pallet',
     note: 'Furniture, appliances',
@@ -147,4 +137,48 @@ export const PACKAGING_PRESETS = [
     heightMm: 900,
     weightGrams: 180_000,
   },
+  {
+    kind: 'custom_carton',
+    // The `kind` is the stored enum and never changes. The name is what a
+    // customer reads, and "custom" is the word the brief itself uses.
+    name: 'Custom size',
+    note: 'Any box — you enter the measurements',
+    lengthMm: 700,
+    widthMm: 500,
+    heightMm: 450,
+    weightGrams: 31_000,
+  },
 ] as const;
+
+/**
+ * Make a declared shipment consistent with the boxes it names.
+ *
+ * If someone says "medium box", they are charged for a medium box — the
+ * dimensions come from the preset, not from the request. The browser makes
+ * those fields read-only, but a form control is a courtesy and this is the
+ * control: it closes the gap where a crafted request declares a large box at a
+ * small box's dimensions and pays the smaller price until the depot catches it.
+ *
+ * Declared measurements only. What the depot puts on the scale is the real
+ * box and is never rewritten — that disagreement is the whole point of
+ * re-rating.
+ */
+export const normaliseDeclared = <T extends {
+  packaging: string;
+  lengthMm: number;
+  widthMm: number;
+  heightMm: number;
+}>(
+  pieces: T[],
+): T[] =>
+  pieces.map((piece) => {
+    if (piece.packaging === CUSTOM_PACKAGING) return piece;
+    const preset = PACKAGING_PRESETS.find((candidate) => candidate.kind === piece.packaging);
+    if (!preset) return piece;
+    return {
+      ...piece,
+      lengthMm: preset.lengthMm,
+      widthMm: preset.widthMm,
+      heightMm: preset.heightMm,
+    };
+  });

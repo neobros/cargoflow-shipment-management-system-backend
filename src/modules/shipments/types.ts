@@ -51,15 +51,14 @@ export interface Party {
 export interface BookingDoc {
   _id?: ObjectId;
   reference: string;
+  /** The account that made it. Absent on walk-ins taken at the counter. */
+  customerId?: ObjectId;
   customerRef: string;
   customerName: string;
   lane: string;
   service: ServiceMode;
   sender: Party;
   receiver: Party;
-  declaredValue: Minor;
-  coverRequested: boolean;
-  pickupRequested: boolean;
   /** Derived from its pieces, maintained in the same transaction. */
   status: PieceStatus;
   bookedQuote: Quote;

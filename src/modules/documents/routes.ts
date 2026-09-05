@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { formatMinor } from '../../shared/units.js';
 import { requireStaff } from '../auth/routes.js';
+import { retry as retryNotification } from '../notifications/dispatcher.js';
+import { invoicePdf } from './pdf.js';
 import * as notifications from '../notifications/service.js';
 import {
   findInvoice,
@@ -29,6 +31,16 @@ const present = (invoice: InvoiceDoc) => ({
   total: formatMinor(invoice.total),
   totalMinor: invoice.total,
   basis: invoice.basis,
+  adjustment: invoice.adjustment
+    ? {
+        reference: invoice.adjustment.reference,
+        bookedTotal: formatMinor(invoice.adjustment.bookedTotal),
+        difference: formatMinor(invoice.adjustment.difference),
+        differencePercent: invoice.adjustment.differencePercent,
+        settledAs: invoice.adjustment.settledAs,
+        settledAt: invoice.adjustment.settledAt?.toISOString() ?? null,
+      }
+    : null,
   rateCardVersion: invoice.rateCardVersion,
   status: invoice.status,
   issuedAt: invoice.issuedAt.toISOString(),
@@ -63,6 +75,19 @@ export const documentRoutes = async (app: FastifyInstance): Promise<void> => {
     },
   );
 
+  /** 3.2 — the invoice as a file the customer can keep and forward. */
+  app.get<{ Params: { number: string } }>(
+    '/v1/invoices/:number/pdf',
+    { preHandler: requireStaff('invoices:issue') },
+    async (request, reply) => {
+      const invoice = await findInvoice(request.params.number);
+      reply
+        .type('application/pdf')
+        .header('content-disposition', `attachment; filename="${invoice.number}.pdf"`);
+      return invoicePdf(invoice);
+    },
+  );
+
   app.post<{ Params: { number: string } }>(
     '/v1/invoices/:number/paid',
     { preHandler: requireStaff('invoices:issue') },
@@ -90,7 +115,9 @@ export const documentRoutes = async (app: FastifyInstance): Promise<void> => {
       : await notifications.listRecent();
 
     return {
+      health: await notifications.queueHealth(),
       notifications: rows.map((row) => ({
+        entityId: row.entityId,
         event: row.event,
         channel: row.channel,
         to: row.to,
@@ -98,9 +125,21 @@ export const documentRoutes = async (app: FastifyInstance): Promise<void> => {
         body: row.body,
         bookingRef: row.bookingRef,
         status: row.status,
+        attempts: row.attempts,
+        transport: row.transport,
+        error: row.error,
         createdAt: row.createdAt.toISOString(),
         sentAt: row.sentAt?.toISOString() ?? null,
       })),
     };
+  });
+
+  /** Put a permanently failed message back in the queue. */
+  app.post('/v1/notifications/retry', { preHandler: requireStaff('adjustments:read') }, async (request) => {
+    const body = request.body as { entityId?: string; event?: string } | undefined;
+    if (!body?.entityId || !body?.event) {
+      throw new Error('entityId and event are required');
+    }
+    return { requeued: await retryNotification(body.entityId, body.event as never) };
   });
 };

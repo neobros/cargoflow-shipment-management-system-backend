@@ -33,11 +33,6 @@ export const QuoteRequest = z.object({
   lane: z.string().min(3),
   service: ServiceMode,
   pieces: z.array(PieceInput).min(1).max(60),
-  /** What the customer says the contents are worth, in minor units. */
-  declaredValue: z.number().int().min(0).max(100_000_00).default(0),
-  coverRequested: z.boolean().default(false),
-  pickupRequested: z.boolean().default(false),
-  remoteDelivery: z.boolean().default(false),
 });
 export type QuoteRequest = z.infer<typeof QuoteRequest>;
 
@@ -68,17 +63,10 @@ export interface RateCard {
   surcharges: {
     handlingPerPiece: Minor;
     customsClearance: Minor;
-    originPickup: Minor;
-    remoteDelivery: Minor;
     oversizePiece: Minor;
     /** A piece over either threshold attracts the oversize surcharge. */
     oversizeLongestSideMm: number;
     oversizeWeightGrams: number;
-  };
-  cover: {
-    /** Basis points of declared value. 150 = 1.5%. */
-    basisPoints: number;
-    minimum: Minor;
   };
   /** Basis points. 1000 = 10% GST. */
   taxBasisPoints: number;

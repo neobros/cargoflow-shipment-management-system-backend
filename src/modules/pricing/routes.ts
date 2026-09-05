@@ -4,7 +4,7 @@ import { badRequest } from '../../shared/errors.js';
 import { formatMoney, formatVolume, formatMinor } from '../../shared/units.js';
 import { priceShipment, PricingError } from './engine.js';
 import { getActiveRateCard } from './repository.js';
-import { LANES, PACKAGING_PRESETS } from './rate-cards.js';
+import { LANES, PACKAGING_PRESETS, normaliseDeclared } from './rate-cards.js';
 import { QuoteRequest, type Quote } from './types.js';
 
 /** Shape the engine's internals into something a browser wants to render. */
@@ -71,9 +71,11 @@ export const pricingRoutes = async (app: FastifyInstance): Promise<void> => {
             service: l.service,
             ratePerUnit: formatMinor(l.rate),
             unit: l.service === 'sea_lcl' ? 'm³' : 'kg',
+            // Two decimals, not four: 0.1000 m³ is the precision a measured
+            // box needs, but this is a headline figure on a price list.
             minimum:
               l.service === 'sea_lcl'
-                ? `${formatVolume(l.minimumQuantity)} m³`
+                ? `${(l.minimumQuantity / 10_000).toFixed(2)} m³`
                 : `${l.minimumQuantity / 1000} kg`,
             transit: { min: l.transitDaysMin, max: l.transitDaysMax },
           })),
@@ -82,13 +84,7 @@ export const pricingRoutes = async (app: FastifyInstance): Promise<void> => {
       surcharges: {
         handlingPerPiece: formatMinor(card.surcharges.handlingPerPiece),
         customsClearance: formatMinor(card.surcharges.customsClearance),
-        originPickup: formatMinor(card.surcharges.originPickup),
-        remoteDelivery: formatMinor(card.surcharges.remoteDelivery),
         oversizePiece: formatMinor(card.surcharges.oversizePiece),
-      },
-      cover: {
-        percent: (card.cover.basisPoints / 100).toFixed(1),
-        minimum: formatMinor(card.cover.minimum),
       },
       taxPercent: (card.taxBasisPoints / 100).toFixed(0),
     };
@@ -107,7 +103,8 @@ export const pricingRoutes = async (app: FastifyInstance): Promise<void> => {
     const card = await getActiveRateCard();
 
     try {
-      return { quote: presentQuote(priceShipment(parsed.data, card)) };
+      const request = { ...parsed.data, pieces: normaliseDeclared(parsed.data.pieces) };
+      return { quote: presentQuote(priceShipment(request, card)) };
     } catch (error) {
       if (error instanceof PricingError) {
         throw badRequest(error.message, error.code);

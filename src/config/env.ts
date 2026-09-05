@@ -12,6 +12,26 @@ const EnvSchema = z.object({
   MONGODB_DB: z.string().default('cargoflow'),
 
   CORS_ORIGINS: z.string().default('http://localhost:3000'),
+
+  /**
+   * Notification transports.
+   *
+   * Both default to `log`, so a fresh clone runs the whole notification path —
+   * templates, queue, dispatcher, retries — without an account anywhere. What
+   * a customer would have received is written to the console and stored, and
+   * the boot log says plainly that nothing left the building.
+   */
+  MAIL_TRANSPORT: z.enum(['log', 'smtp']).default('log'),
+  MAIL_FROM: z.string().default('CargoFlow <no-reply@cargoflow.example>'),
+  SMTP_HOST: z.string().default('localhost'),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_USER: z.string().default(''),
+  SMTP_PASSWORD: z.string().default(''),
+
+  SMS_TRANSPORT: z.enum(['log', 'twilio']).default('log'),
+  TWILIO_ACCOUNT_SID: z.string().default(''),
+  TWILIO_AUTH_TOKEN: z.string().default(''),
+  TWILIO_FROM: z.string().default(''),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

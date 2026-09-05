@@ -41,7 +41,10 @@ export const requireStaff =
         // Say which permission is missing. An operator hitting an approve
         // button should be told they cannot approve, not shown a blank 403.
         throw new AppError(
-          `A ${ROLE_LABELS[request.staff.role].toLowerCase()} cannot ${PERMISSION_LABELS[permission]}`,
+          // "A billing cannot..." reads as broken English, because two of the
+          // four role names are job titles and two are departments. Address the
+          // person instead of naming their role in the third person.
+          `Your role (${ROLE_LABELS[request.staff.role]}) cannot ${PERMISSION_LABELS[permission]}`,
           'forbidden',
           403,
           { required: permission, role: request.staff.role },

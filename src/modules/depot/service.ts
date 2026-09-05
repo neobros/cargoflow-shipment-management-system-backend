@@ -13,6 +13,7 @@ import {
   deriveBookingStatus,
   type AdjustmentDoc,
   type BookingDoc,
+  type ContainerDoc,
   type Measurement,
   type PieceDoc,
   type PieceEventDoc,
@@ -67,10 +68,6 @@ const currentQuoteRequest = (booking: BookingDoc, all: PieceDoc[]): QuoteRequest
     .slice()
     .sort((a, b) => a.sequence - b.sequence)
     .map((piece) => asPieceInput(piece, piece.verified ?? piece.declared)),
-  declaredValue: booking.declaredValue,
-  coverRequested: booking.coverRequested,
-  pickupRequested: booking.pickupRequested,
-  remoteDelivery: false,
 });
 
 // ── 2.1 Receiving ──────────────────────────────────────────────────────────
@@ -185,15 +182,14 @@ export const receiveBooking = async (
       event: 'received_at_depot',
       bookingRef: booking.reference,
       to: { email: booking.sender.email, mobile: booking.sender.mobile },
-      subject: `We have ${received.length === all.length ? 'all' : received.length} of your boxes`,
-      body: [
-        `${received.length} ${received.length === 1 ? 'box' : 'boxes'} from ${booking.reference} arrived at our depot.`,
-        '',
-        ...received.map((piece) => `  ${piece.trackingId} — ${piece.packaging.replace(/_/g, ' ')}`),
-        '',
-        'Next we weigh and measure each one. If anything differs from what you',
-        'told us, we will send you the new price before charging it.',
-      ].join('\n'),
+      data: {
+        customerName: booking.customerName,
+        bookingRef: booking.reference,
+        receivedCount: received.length,
+        trackingIds: received
+          .map((piece) => `  ${piece.trackingId} — ${piece.packaging.replace(/_/g, ' ')}`)
+          .join(String.fromCharCode(10)),
+      },
     });
   }
 
@@ -401,25 +397,16 @@ export const verifyPiece = async (
       event: 'price_changed',
       bookingRef: booking.reference,
       to: { email: booking.sender.email, mobile: booking.sender.mobile },
-      subject: `${booking.reference}: your price has changed to ${formatMoney(assessment.verified.total)}`,
-      body: [
-        `We measured your boxes and ${
-          assessment.changedPieceIndexes.length === 1 ? 'one is' : 'some are'
-        } bigger than booked.`,
-        '',
-        `You booked: ${formatMoney(assessment.booked.total)}`,
-        `Now:        ${formatMoney(assessment.verified.total)}`,
-        `Difference: ${formatMoney(assessment.difference)} (${(
-          assessment.differenceBasisPoints / 100
-        ).toFixed(1)}%)`,
-        '',
-        'Nothing ships and nothing is charged until you say yes.',
-        assessment.autoApproveAt
-          ? `If we do not hear from you by ${assessment.autoApproveAt.toDateString()} the new price applies. We will remind you first.`
-          : '',
-      ]
-        .filter(Boolean)
-        .join('\n'),
+      data: {
+        customerName: booking.customerName,
+        bookingRef: booking.reference,
+        bookedTotal: formatMoney(assessment.booked.total),
+        verifiedTotal: formatMoney(assessment.verified.total),
+        difference: formatMoney(assessment.difference),
+        differencePercent: (assessment.differenceBasisPoints / 100).toFixed(1),
+        changedCount: assessment.changedPieceIndexes.length,
+        autoApproveAt: assessment.autoApproveAt?.toDateString() ?? undefined,
+      },
     });
     customerNotified = true;
   }
@@ -633,10 +620,6 @@ export const walkIn = async (
       lane: input.lane,
       service: input.service,
       pieces: input.pieces,
-      declaredValue: 0,
-      coverRequested: false,
-      pickupRequested: false,
-      remoteDelivery: false,
     },
     card,
     now,
@@ -668,9 +651,6 @@ export const walkIn = async (
       postcode: AWAITING,
       country: 'AU',
     },
-    declaredValue: 0,
-    coverRequested: false,
-    pickupRequested: false,
     status: 'verified',
     bookedQuote: quote,
     verifiedQuote: quote,
@@ -834,5 +814,123 @@ export const lookupPiece = async (trackingId: string) => {
     receivedAt: piece.receivedAt?.toISOString() ?? null,
     verifiedAt: piece.verifiedAt?.toISOString() ?? null,
     loaded: Boolean(piece.containerId),
+  };
+};
+
+// ── The warehouse dashboard ────────────────────────────────────────────────
+
+export interface DepotOverview {
+  counts: {
+    awaitingReceipt: number;
+    awaitingMeasure: number;
+    held: number;
+    readyToLabel: number;
+    loadedToday: number;
+  };
+  /** Containers still taking boxes, soonest cut-off first. */
+  openContainers: {
+    containerNumber: string;
+    destination: string;
+    vessel: string;
+    voyage: string;
+    fillPercent: number;
+    pieceCount: number;
+    cutOffAt: string;
+    hoursToCutOff: number;
+  }[];
+  /** Boxes measured over tolerance and waiting on a decision. */
+  heldPieces: {
+    trackingId: string;
+    bookingRef: string;
+    consignee: string;
+    declaredVolume: string;
+    verifiedVolume: string;
+  }[];
+  recentEvents: { at: string; pieceId: string; code: string; actor: string; detail: string }[];
+}
+
+/**
+ * What one operator needs to know before touching anything: how much work is
+ * waiting, in which stage, and which container is closest to its cut-off.
+ *
+ * Counted with aggregations rather than by loading every piece, because this is
+ * the first screen of a shift and a warehouse with ten thousand boxes on the
+ * floor should not make somebody wait for it.
+ */
+export const depotOverview = async (): Promise<DepotOverview> => {
+  const now = new Date();
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const [byStatus] = await Promise.all([
+    pieces()
+      .aggregate<{ _id: string; n: number }>([
+        { $match: { status: { $nin: ['in_transit', 'delivered', 'cleared'] } } },
+        { $group: { _id: '$status', n: { $sum: 1 } } },
+      ])
+      .toArray(),
+  ]);
+
+  const count = (status: string) => byStatus.find((row) => row._id === status)?.n ?? 0;
+
+  const loadedToday = await collection<PieceEventDoc>(COLLECTIONS.pieceEvents).countDocuments({
+    code: 'loaded',
+    at: { $gte: startOfDay },
+  });
+
+  const containerDocs = await collection<ContainerDoc>(COLLECTIONS.containers)
+    .find({ status: 'open' })
+    .sort({ cutOffAt: 1 })
+    .limit(6)
+    .toArray();
+
+  const openContainers = [];
+  for (const container of containerDocs) {
+    const loaded = await pieces().find({ containerId: container._id! }).toArray();
+    const used = loaded.reduce((total, p) => total + (p.verified ?? p.declared).volume, 0);
+    openContainers.push({
+      containerNumber: container.containerNumber,
+      destination: container.destinationLabel,
+      vessel: container.vessel,
+      voyage: container.voyage,
+      fillPercent:
+        container.capacityVolume === 0 ? 0 : Math.round((used / container.capacityVolume) * 100),
+      pieceCount: loaded.length,
+      cutOffAt: container.cutOffAt.toISOString(),
+      hoursToCutOff: Math.round((container.cutOffAt.getTime() - now.getTime()) / 3_600_000),
+    });
+  }
+
+  const held = await pieces().find({ status: 'rerate_held' }).limit(12).toArray();
+
+  const recentEvents = await collection<PieceEventDoc>(COLLECTIONS.pieceEvents)
+    .find({})
+    .sort({ at: -1 })
+    .limit(8)
+    .toArray();
+
+  return {
+    counts: {
+      awaitingReceipt: count('booked'),
+      awaitingMeasure: count('received'),
+      held: count('rerate_held'),
+      readyToLabel: count('verified') + count('labelled'),
+      loadedToday,
+    },
+    openContainers,
+    heldPieces: held.map((piece) => ({
+      trackingId: piece.trackingId ?? '—',
+      bookingRef: piece.bookingRef,
+      consignee: piece.consigneeName,
+      declaredVolume: formatVolume(piece.declared.volume),
+      verifiedVolume: piece.verified ? formatVolume(piece.verified.volume) : '—',
+    })),
+    recentEvents: recentEvents.map((event) => ({
+      at: event.at.toISOString(),
+      pieceId: event.pieceId,
+      code: event.code,
+      actor: event.actor,
+      detail: event.detail,
+    })),
   };
 };

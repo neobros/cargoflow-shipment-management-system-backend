@@ -2,6 +2,8 @@ import { env } from './config/env.js';
 import { closeDatabase, connectToDatabase, ensureIndexes, ensureTimeSeriesCollections } from './db/mongo.js';
 import { seedRateCards } from './db/seed.js';
 import { seedStaff } from './modules/auth/seed.js';
+import { startDispatcher, stopDispatcher } from './modules/notifications/dispatcher.js';
+import { describeTransports } from './modules/notifications/transports.js';
 import { buildServer } from './server.js';
 
 const start = async (): Promise<void> => {
@@ -37,11 +39,26 @@ const start = async (): Promise<void> => {
     );
   }
 
+  const transports = describeTransports();
+  app.log.info({ email: transports.email, sms: transports.sms }, 'Notification transports');
+  if (!transports.live) {
+    app.log.warn(
+      'No mail or SMS provider is configured, so nothing actually reaches a customer. ' +
+        'Messages are composed, stored and printed below, and readable at /admin/messages. ' +
+        'Set MAIL_TRANSPORT=smtp or SMS_TRANSPORT=twilio in .env to send for real.',
+    );
+  }
+
+  // The queue runs in-process: one service, one database, a few hundred
+  // messages a day. dispatchPending() is the seam if it ever needs a worker.
+  startDispatcher(15_000, (error) => app.log.error({ error }, 'Notification dispatch failed'));
+
   await app.listen({ port: env.PORT, host: env.HOST });
   app.log.info(`CargoFlow API ready on http://localhost:${env.PORT}`);
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, 'Shutting down');
+    stopDispatcher();
     await app.close();
     await closeDatabase();
     process.exit(0);

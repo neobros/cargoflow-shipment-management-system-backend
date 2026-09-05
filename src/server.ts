@@ -11,6 +11,7 @@ import { containerRoutes } from './modules/containers/routes.js';
 import { depotRoutes } from './modules/depot/routes.js';
 import { documentRoutes } from './modules/documents/routes.js';
 import { attachStaff, authRoutes } from './modules/auth/routes.js';
+import { attachCustomer, customerRoutes } from './modules/customers/routes.js';
 import { pricingRoutes } from './modules/pricing/routes.js';
 import { shipmentRoutes } from './modules/shipments/routes.js';
 import { AppError } from './shared/errors.js';
@@ -56,6 +57,9 @@ export const buildServer = async (): Promise<FastifyInstance> => {
   // Root scope on purpose. Fastify encapsulates plugins, so a preHandler
   // registered inside the auth plugin would never run for admin routes.
   app.addHook('preHandler', attachStaff);
+  // Both run on every request and neither evicts the other: the same browser
+  // can hold a customer session at home and a staff session at work.
+  app.addHook('preHandler', attachCustomer);
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
     origin: env.corsOrigins.length > 0 ? env.corsOrigins : true,
@@ -120,6 +124,7 @@ export const buildServer = async (): Promise<FastifyInstance> => {
   await app.register(adminRoutes);
   await app.register(pricingRoutes);
   await app.register(shipmentRoutes);
+  await app.register(customerRoutes);
   await app.register(bookingRoutes);
   await app.register(depotRoutes);
   await app.register(containerRoutes);

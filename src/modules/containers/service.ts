@@ -417,15 +417,17 @@ export const sealContainer = async (
       event: 'departed',
       bookingRef: reference,
       to: { email: booking.sender.email, mobile: booking.sender.mobile },
-      subject: `${reference} is on its way`,
-      body: [
-        `Your ${mine.length} ${mine.length === 1 ? 'box is' : 'boxes are'} aboard ${container.vessel} ${container.voyage}.`,
-        '',
-        `Container: ${container.containerNumber} (seal ${input.sealNumber})`,
-        `Arriving ${container.destinationLabel} around ${container.etaAt.toDateString()}`,
-        '',
-        `Follow it with ${reference}.`,
-      ].join('\n'),
+      data: {
+        customerName: booking.customerName,
+        bookingRef: reference,
+        pieceCount: mine.length,
+        vessel: container.vessel,
+        voyage: container.voyage,
+        containerNumber: container.containerNumber,
+        sealNumber: input.sealNumber,
+        destination: container.destinationLabel,
+        etaAt: container.etaAt.toDateString(),
+      },
     });
   }
 

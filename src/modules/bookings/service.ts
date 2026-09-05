@@ -1,18 +1,16 @@
-import { ObjectId, type ClientSession } from 'mongodb';
+import { ObjectId } from 'mongodb';
 import { z } from 'zod';
 import { COLLECTIONS, collection, withTransaction } from '../../db/mongo.js';
 import { badRequest } from '../../shared/errors.js';
 import { formatMoney, volumeOf } from '../../shared/units.js';
 import { priceShipment, PricingError } from '../pricing/engine.js';
 import { getActiveRateCard } from '../pricing/repository.js';
-import { LANES } from '../pricing/rate-cards.js';
+import { LANES, normaliseDeclared } from '../pricing/rate-cards.js';
 import { PieceInput, ServiceMode, type QuoteRequest } from '../pricing/types.js';
 import * as notifications from '../notifications/service.js';
-import {
-  nextBookingReference,
-  nextCustomerReference,
-  trackingIdFor,
-} from '../shipments/sequences.js';
+import { rememberSender } from '../customers/service.js';
+import type { CustomerDoc } from '../customers/types.js';
+import { nextBookingReference, trackingIdFor } from '../shipments/sequences.js';
 import type { BookingDoc, Measurement, PieceDoc, PieceEventDoc, Party } from '../shipments/types.js';
 
 /**
@@ -43,23 +41,10 @@ export const CreateBooking = z.object({
   lane: z.string().min(3),
   service: ServiceMode,
   pieces: z.array(PieceInput).min(1).max(60),
-  declaredValue: z.number().int().min(0).max(100_000_00).default(0),
-  coverRequested: z.boolean().default(false),
-  pickupRequested: z.boolean().default(false),
-  remoteDelivery: z.boolean().default(false),
   sender: PartyInput,
   receiver: PartyInput,
 });
 export type CreateBooking = z.infer<typeof CreateBooking>;
-
-interface CustomerDoc {
-  _id?: ObjectId;
-  reference: string;
-  name: string;
-  mobile: string;
-  email?: string;
-  createdAt: Date;
-}
 
 const measurementOf = (piece: PieceInput): Measurement => ({
   lengthMm: piece.lengthMm,
@@ -81,31 +66,6 @@ const toParty = (input: z.infer<typeof PartyInput>): Party => ({
   country: input.country,
   ...(input.idNumber ? { idNumber: input.idNumber } : {}),
 });
-
-/**
- * A returning customer is matched on mobile number, not email.
- *
- * Households share an email address far more often than they share a phone,
- * and the mobile is what the SMS goes to.
- */
-const findOrCreateCustomer = async (
-  sender: Party,
-  session: ClientSession | undefined,
-): Promise<CustomerDoc> => {
-  const customers = collection<CustomerDoc>(COLLECTIONS.customers);
-  const existing = await customers.findOne({ mobile: sender.mobile }, { session });
-  if (existing) return existing;
-
-  const doc: CustomerDoc = {
-    reference: await nextCustomerReference(),
-    name: sender.name,
-    mobile: sender.mobile,
-    ...(sender.email ? { email: sender.email } : {}),
-    createdAt: new Date(),
-  };
-  await customers.insertOne(doc, { session });
-  return doc;
-};
 
 export interface CreatedBooking {
   reference: string;
@@ -130,21 +90,23 @@ export interface CreatedBooking {
  * as a promise, and a label printed for a box that never arrives is a box the
  * system believes it has.
  */
-export const createBooking = async (input: CreateBooking): Promise<CreatedBooking> => {
+export const createBooking = async (
+  input: CreateBooking,
+  account: CustomerDoc,
+): Promise<CreatedBooking> => {
   const lane = LANES.find((l) => l.code === input.lane);
   if (!lane) throw badRequest(`We do not ship ${input.lane}`, 'unknown_lane');
 
   const card = await getActiveRateCard();
   const now = new Date();
 
+  // A named box is priced as that box, whatever dimensions arrived.
+  const pieces = normaliseDeclared(input.pieces);
+
   const quoteRequest: QuoteRequest = {
     lane: input.lane,
     service: input.service,
-    pieces: input.pieces,
-    declaredValue: input.declaredValue,
-    coverRequested: input.coverRequested,
-    pickupRequested: input.pickupRequested,
-    remoteDelivery: input.remoteDelivery,
+    pieces,
   };
 
   let bookedQuote;
@@ -160,21 +122,18 @@ export const createBooking = async (input: CreateBooking): Promise<CreatedBookin
   const reference = await nextBookingReference(now);
 
   await withTransaction(async (session) => {
-      const customer = await findOrCreateCustomer(sender, session);
       const bookingId = new ObjectId();
 
       const booking: BookingDoc = {
         _id: bookingId,
         reference,
-        customerRef: customer.reference,
-        customerName: sender.name,
+        customerId: account._id!,
+        customerRef: account.reference,
+        customerName: account.name,
         lane: input.lane,
         service: input.service,
         sender,
         receiver,
-        declaredValue: input.declaredValue,
-        coverRequested: input.coverRequested,
-        pickupRequested: input.pickupRequested,
         status: 'booked',
         bookedQuote,
         verifiedQuote: null,
@@ -182,7 +141,7 @@ export const createBooking = async (input: CreateBooking): Promise<CreatedBookin
         updatedAt: now,
       };
 
-      const pieces: PieceDoc[] = input.pieces.map((piece, index) => ({
+      const pieceDocs: PieceDoc[] = pieces.map((piece, index) => ({
         bookingId,
         bookingRef: reference,
         consigneeName: receiver.name,
@@ -200,23 +159,26 @@ export const createBooking = async (input: CreateBooking): Promise<CreatedBookin
         createdAt: now,
       }));
 
-      const events: PieceEventDoc[] = pieces.map((piece) => ({
+      const events: PieceEventDoc[] = pieceDocs.map((piece) => ({
         at: now,
         // No tracking ID yet, so the audit trail keys on the booking and the
         // piece's position within it.
         pieceId: `${reference}#${piece.sequence}`,
         bookingRef: reference,
         code: 'booked',
-        actor: customer.reference,
+        actor: account.reference,
         detail: `${piece.packaging.replace(/_/g, ' ')} declared ${piece.declared.lengthMm / 10}×${
           piece.declared.widthMm / 10
         }×${piece.declared.heightMm / 10} cm, ${(piece.declared.weightGrams / 1000).toFixed(1)} kg`,
       }));
 
       await collection<BookingDoc>(COLLECTIONS.bookings).insertOne(booking, { session });
-      await collection<PieceDoc>(COLLECTIONS.pieces).insertMany(pieces, { session });
+      await collection<PieceDoc>(COLLECTIONS.pieces).insertMany(pieceDocs, { session });
       await collection<PieceEventDoc>(COLLECTIONS.pieceEvents).insertMany(events, { session });
     });
+
+  // Next time they book, the sender block fills itself in.
+  await rememberSender(account._id!, sender);
 
   const total = formatMoney(bookedQuote.total);
 
@@ -226,19 +188,16 @@ export const createBooking = async (input: CreateBooking): Promise<CreatedBookin
     entityId: reference,
     event: 'booking_confirmed',
     bookingRef: reference,
-    to: { email: sender.email, mobile: sender.mobile },
-    subject: `Booking ${reference} confirmed — ${total}`,
-    body: [
-      `Thanks ${sender.name.split(' ')[0]}, your booking is in.`,
-      '',
-      `Reference: ${reference}`,
-      `${input.pieces.length} ${input.pieces.length === 1 ? 'box' : 'boxes'} · ${lane.from} → ${lane.to}`,
-      `Estimated price: ${total} including GST`,
-      '',
-      'Drop your boxes at our Peliyagoda depot. We weigh and measure every one,',
-      'and if anything differs from what you told us we will send you the new',
-      'price and wait for your yes before charging it.',
-    ].join('\n'),
+    to: { email: account.email, mobile: account.mobile },
+    data: {
+      customerName: account.name,
+      bookingRef: reference,
+      total,
+      pieceCount: input.pieces.length,
+      route: `${lane.from} → ${lane.to}`,
+      depot: 'our Peliyagoda depot',
+      depotAddress: '118 Negombo Road, Peliyagoda 11600',
+    },
   });
 
   return {

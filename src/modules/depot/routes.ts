@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { badRequest } from '../../shared/errors.js';
 import { requireStaff } from '../auth/routes.js';
 import {
+  depotOverview,
   depotQueue,
   labelFor,
   lookupPiece,
@@ -37,7 +38,12 @@ const parse = <T extends { safeParse: (v: unknown) => { success: boolean; data?:
 };
 
 export const depotRoutes = async (app: FastifyInstance): Promise<void> => {
-  /** What is on the floor. */
+  /** The warehouse dashboard: how much work is waiting, and where. */
+  app.get('/v1/depot/overview', { preHandler: requireStaff('depot:receive') }, async () =>
+    depotOverview(),
+  );
+
+  /** What is on the floor, shipment by shipment. */
   app.get('/v1/depot/queue', { preHandler: requireStaff('depot:receive') }, async () => depotQueue());
 
   /** One scan, everything about that box. */

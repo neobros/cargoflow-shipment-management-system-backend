@@ -63,13 +63,16 @@ const OPERATIONAL = [
   'documents',
   'notifications',
   'customers',
+  'customerSessions',
   'pieceEvents',
   // Reference numbers restart, so the first booking after a reset is BK-26-0001
   // rather than continuing from whatever the test data reached.
   'counters',
 ];
 
-/** Configuration and access. Kept. */
+/** Configuration and staff access. Kept. Customer accounts are not — they
+ * belong to the shipments, and a reset that leaves orphaned logins behind is
+ * a reset that lies about being empty. */
 const KEPT = ['rateCards', 'staff', 'sessions'];
 
 const apply = process.argv.includes('--yes');

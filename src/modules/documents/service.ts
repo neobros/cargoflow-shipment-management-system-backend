@@ -40,6 +40,25 @@ export interface InvoiceDoc {
   total: Minor;
   /** Which quote this was cut from, so a dispute can be reconstructed. */
   basis: 'booked' | 'verified';
+  /**
+   * What the customer originally booked, and what moved.
+   *
+   * Requirement 4.1 asks the invoice to show the original price and the
+   * adjustment, not just the total. Without it a re-rated customer receives a
+   * figure that does not match their confirmation email and has to ring to find
+   * out why — which is the dispute the whole re-rate flow exists to avoid.
+   *
+   * Null when nothing changed, so an ordinary invoice stays an ordinary
+   * invoice rather than carrying an empty "adjustments: none" row.
+   */
+  adjustment: {
+    reference: string;
+    bookedTotal: Minor;
+    difference: Minor;
+    differencePercent: string;
+    settledAs: AdjustmentDoc['state'];
+    settledAt: Date | null;
+  } | null;
   rateCardVersion: number;
   status: 'issued' | 'paid' | 'void';
   issuedAt: Date;
@@ -97,6 +116,13 @@ export const issueInvoice = async (
   const quote: Quote = booking.verifiedQuote ?? booking.bookedQuote;
   const basis: 'booked' | 'verified' = booking.verifiedQuote ? 'verified' : 'booked';
 
+  // A settled price change belongs on the invoice. An unsettled one blocks it
+  // entirely, which the check above already did.
+  const settled = await adjustments().findOne(
+    { bookingId: booking._id!, state: { $in: ['approved', 'auto_approved', 'waived', 'settled'] } },
+    { sort: { raisedAt: -1 } },
+  );
+
   const now = new Date();
   const doc: InvoiceDoc = {
     number: await nextInvoiceNumber(now),
@@ -121,6 +147,17 @@ export const issueInvoice = async (
     tax: quote.tax.amount,
     total: quote.total.amount,
     basis,
+    adjustment: settled
+      ? {
+          reference: settled.reference,
+          bookedTotal: settled.bookedTotal,
+          // A waived change costs the customer nothing, whatever was measured.
+          difference: settled.state === 'waived' ? 0 : settled.difference,
+          differencePercent: (settled.differenceBasisPoints / 100).toFixed(1),
+          settledAs: settled.state,
+          settledAt: settled.settledAt,
+        }
+      : null,
     rateCardVersion: quote.rateCardVersion,
     status: 'issued',
     issuedAt: now,
@@ -136,17 +173,15 @@ export const issueInvoice = async (
     event: 'invoice_issued',
     bookingRef: booking.reference,
     to: { email: booking.sender.email, mobile: booking.sender.mobile },
-    subject: `Invoice ${doc.number} — ${quote.currency} ${formatMinor(doc.total)}`,
-    body: [
-      `Invoice ${doc.number} for booking ${booking.reference}.`,
-      '',
-      `Amount due: ${quote.currency} ${formatMinor(doc.total)} (including GST)`,
-      `Due by: ${doc.dueAt.toDateString()}`,
-      '',
-      basis === 'verified'
-        ? 'This is based on the measurements we took at our depot.'
-        : 'This is based on the sizes you gave us. We will re-check at the depot.',
-    ].join('\n'),
+    data: {
+      customerName: booking.customerName,
+      bookingRef: booking.reference,
+      invoiceNumber: doc.number,
+      currency: quote.currency,
+      total: formatMinor(doc.total),
+      dueAt: doc.dueAt.toDateString(),
+      basis,
+    },
   });
 
   return doc;
