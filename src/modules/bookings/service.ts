@@ -119,6 +119,32 @@ export const createBooking = async (
 
   const sender = toParty(input.sender);
   const receiver = toParty(input.receiver);
+
+  /*
+   * The addresses have to belong to the lane.
+   *
+   * Without this a Colombo → Melbourne booking can be addressed to a Sri
+   * Lankan town, and nothing objects: the price is computed from the lane, the
+   * label prints, the box is received and measured. The contradiction only
+   * surfaces at the container door, days later, where it looks like a loading
+   * fault rather than what it is — a booking that was never coherent.
+   *
+   * Refuse it here, while the customer is still looking at the form that
+   * created it.
+   */
+  if (receiver.country !== lane.toCountry) {
+    throw badRequest(
+      `${lane.from} → ${lane.to} delivers in ${lane.toCountry}, but this receiver address is in ${receiver.country}. Pick the lane that serves them, or correct the address.`,
+      'receiver_off_lane',
+    );
+  }
+  if (sender.country !== lane.fromCountry) {
+    throw badRequest(
+      `${lane.from} → ${lane.to} collects in ${lane.fromCountry}, but this sender address is in ${sender.country}.`,
+      'sender_off_lane',
+    );
+  }
+
   const reference = await nextBookingReference(now);
 
   await withTransaction(async (session) => {
