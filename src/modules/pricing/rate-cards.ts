@@ -75,10 +75,16 @@ export const RATE_CARD_V12: RateCard = {
 };
 
 /** Human labels for the lanes the customer app offers. */
+/**
+ * A lane is a port pair, and it carries the two countries as well as the two
+ * cities. The countries are what addresses are checked against: a lane that
+ * arrives in Australia cannot deliver to a Sri Lankan suburb, and catching
+ * that at booking is far cheaper than catching it at the container door.
+ */
 export const LANES = [
-  { code: 'LKCMB-AUMEL', from: 'Colombo', to: 'Melbourne' },
-  { code: 'LKCMB-AUSYD', from: 'Colombo', to: 'Sydney' },
-  { code: 'LKCMB-AUBNE', from: 'Colombo', to: 'Brisbane' },
+  { code: 'LKCMB-AUMEL', from: 'Colombo', fromCountry: 'LK', to: 'Melbourne', toCountry: 'AU' },
+  { code: 'LKCMB-AUSYD', from: 'Colombo', fromCountry: 'LK', to: 'Sydney', toCountry: 'AU' },
+  { code: 'LKCMB-AUBNE', from: 'Colombo', fromCountry: 'LK', to: 'Brisbane', toCountry: 'AU' },
 ] as const;
 
 /**

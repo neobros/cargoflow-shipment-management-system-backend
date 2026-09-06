@@ -247,15 +247,31 @@ export const loadPieces = async (
 
   // One lookup per booking, not per piece — forty boxes are usually a handful
   // of shipments.
+  const bookingIds = [...new Set(found.map((p) => p.bookingId.toHexString()))].map(
+    (id) => new ObjectId(id),
+  );
+
   const heldBookings = new Set(
     (
       await adjustments()
-        .find({
-          bookingId: { $in: [...new Set(found.map((p) => p.bookingId.toHexString()))].map((id) => new ObjectId(id)) },
-          state: 'awaiting_approval',
-        })
+        .find({ bookingId: { $in: bookingIds }, state: 'awaiting_approval' })
         .toArray()
     ).map((adjustment) => adjustment.bookingId.toHexString()),
+  );
+
+  /*
+   * Which ship a box belongs on is decided by its booking's lane, not by the
+   * receiver's suburb.
+   *
+   * Comparing the suburb refuses boxes that are perfectly loadable — a
+   * Melbourne-lane box delivered in Geelong or Footscray is still on the
+   * Melbourne vessel — and it blames the wrong field when it does. The lane is
+   * a controlled code, so the comparison is exact with no casing to trip over.
+   */
+  const laneOf = new Map(
+    (await bookings().find({ _id: { $in: bookingIds } }, { projection: { lane: 1 } }).toArray()).map(
+      (booking) => [booking._id!.toHexString(), booking.lane],
+    ),
   );
 
   for (const id of ids) {
@@ -286,10 +302,12 @@ export const loadPieces = async (
       });
       continue;
     }
-    if (piece.destination.split(',')[0]?.trim() !== container.destinationLabel) {
+    const pieceLane = laneOf.get(piece.bookingId.toHexString());
+    if (pieceLane !== container.lane) {
+      const port = LANES.find((l) => l.code === pieceLane)?.to ?? 'another port';
       refused.push({
         trackingId: id,
-        reason: `Going to ${piece.destination}, not ${container.destinationLabel}`,
+        reason: `Sailing to ${port}, not ${container.destinationLabel}`,
       });
       continue;
     }
